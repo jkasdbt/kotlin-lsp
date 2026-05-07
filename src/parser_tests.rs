@@ -473,7 +473,7 @@ fn dot_completion_hides_private() {
     );
 
     let _ = idx.completions(&vm_uri, tower_lsp::lsp_types::Position::new(2, 24), true); // after "private val repo: Repo"
-                                                                                            // Trigger a dot completion manually through resolver
+                                                                                        // Trigger a dot completion manually through resolver
     let (items, _) = complete_symbol(&idx, "", Some("repo"), &vm_uri, true, None);
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert!(labels.contains(&"findAll"), "findAll missing: {labels:?}");

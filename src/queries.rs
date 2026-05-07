@@ -396,6 +396,7 @@ pub(crate) const KIND_TYPE_ARGS: &str = "type_arguments";
 // ─── Kotlin property / navigation / call node kinds ──────────────────────────
 pub(crate) const KIND_PROP_DECL: &str = "property_declaration";
 pub(crate) const KIND_PROP_DELEGATE: &str = "property_delegate";
+pub(crate) const KIND_TYPE_ALIAS: &str = "type_alias";
 pub(crate) const KIND_VAR_DECL: &str = "variable_declaration";
 pub(crate) const KIND_MULTI_VAR_DECL: &str = "multi_variable_declaration";
 pub(crate) const KIND_NAV_EXPR: &str = "navigation_expression";
@@ -405,7 +406,11 @@ pub(crate) const KIND_CALLABLE_REF: &str = "callable_reference";
 
 // ─── Kotlin structural / scope node kinds ─────────────────────────────────────
 pub(crate) const KIND_SOURCE_FILE: &str = "source_file";
+pub(crate) const KIND_BLOCK: &str = "block";
+pub(crate) const KIND_CATCH_BLOCK: &str = "catch_block";
 pub(crate) const KIND_CLASS_BODY: &str = "class_body";
+pub(crate) const KIND_CONTROL_STRUCTURE_BODY: &str = "control_structure_body";
+pub(crate) const KIND_FOR_STMT: &str = "for_statement";
 pub(crate) const KIND_FUN_BODY: &str = "function_body";
 pub(crate) const KIND_COMPANION_OBJ: &str = "companion_object";
 pub(crate) const KIND_ANON_FUN: &str = "anonymous_function";
@@ -439,3 +444,15 @@ pub(crate) const KIND_MARKER_ANNOTATION: &str = "marker_annotation";
 pub(crate) const KIND_MOD_STATIC: &str = "static";
 pub(crate) const KIND_MOD_FINAL: &str = "final";
 pub(crate) const KIND_MOD_ABSTRACT: &str = "abstract";
+
+// ─── Kotlin class parameter ───────────────────────────────────────────────────
+pub(crate) const KIND_CLASS_PARAM: &str = "class_parameter";
+
+// ─── Kotlin soft keywords (anonymous CST nodes) ───────────────────────────────
+pub(crate) const KIND_KW_IS: &str = "is";
+pub(crate) const KIND_KW_IS_NOT: &str = "!is";
+pub(crate) const KIND_KW_AS: &str = "as";
+pub(crate) const KIND_KW_AS_SAFE: &str = "as?";
+pub(crate) const KIND_KW_IN: &str = "in";
+pub(crate) const KIND_KW_IN_NOT: &str = "!in";
+pub(crate) const KIND_KW_BY: &str = "by";

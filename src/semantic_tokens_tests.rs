@@ -513,54 +513,7 @@ fn empty_file_returns_no_tokens() {
 }
 
 #[test]
-fn named_arg_cst_detail() {
-    let src = "fun main() { foo(name = 42) }\n";
-    let doc = parse_kotlin(src);
-    fn find_value_arg(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
-        if node.kind() == "value_argument" {
-            return Some(node);
-        }
-        let mut c = node.walk();
-        if c.goto_first_child() {
-            loop {
-                if let Some(r) = find_value_arg(c.node()) {
-                    return Some(r);
-                }
-                if !c.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-    let va = find_value_arg(doc.tree.root_node()).unwrap();
-    eprintln!("value_argument children:");
-    for i in 0..va.child_count() {
-        let c = va.child(i).unwrap();
-        eprintln!(
-            "  child({i}): kind={:?} named={} text={:?}",
-            c.kind(),
-            c.is_named(),
-            c.utf8_text(src.as_bytes()).unwrap_or("?")
-        );
-    }
-    eprintln!("value_argument named_children:");
-    for i in 0..va.named_child_count() {
-        let c = va.named_child(i).unwrap();
-        eprintln!(
-            "  named_child({i}): kind={:?} text={:?}",
-            c.kind(),
-            c.utf8_text(src.as_bytes()).unwrap_or("?")
-        );
-    }
-    // Check our detection function
-    let label = va.named_child(0).unwrap();
-    let next_sib = label.next_sibling();
-    eprintln!("label next_sibling: {:?}", next_sib.map(|n| n.kind()));
-}
-
-#[test]
-fn named_arg_label_gets_property_token() {
+fn named_arg_label_gets_parameter_token() {
     let src = "fun foo(name: Int) {}\nfun main() { foo(name = 42) }\n";
     let uri = Url::parse("file:///named_arg_test.kt").unwrap();
     let indexer = Indexer::new();
@@ -620,6 +573,69 @@ fn decl_function_parameter() {
             .iter()
             .any(|t| t.0 == 0 && t.1 == 24 && t.3 == param_type),
         "Expected PARAMETER for 'age' at col 24, got: {tokens:?}"
+    );
+}
+
+#[test]
+fn class_parameter_val_gets_property() {
+    let src = "class Foo(val x: Int)\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let property_type = type_id(&SemanticTokenType::PROPERTY);
+    let readonly_bit = 1u32 << 1;
+    let decl_bit = 1u32 << 0;
+
+    let token = tokens
+        .iter()
+        .find(|&&(line, col, _, token_type, _)| {
+            line == 0 && col == 14 && token_type == property_type
+        })
+        .expect("expected PROPERTY token for class parameter");
+    assert_ne!(
+        token.4 & readonly_bit,
+        0,
+        "val class parameter should be READONLY"
+    );
+    assert_ne!(
+        token.4 & decl_bit,
+        0,
+        "class parameter should be a declaration"
+    );
+}
+
+#[test]
+fn class_parameter_var_gets_property() {
+    let src = "class Foo(var x: Int)\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let property_type = type_id(&SemanticTokenType::PROPERTY);
+    let readonly_bit = 1u32 << 1;
+
+    let token = tokens
+        .iter()
+        .find(|&&(line, col, _, token_type, _)| {
+            line == 0 && col == 14 && token_type == property_type
+        })
+        .expect("expected PROPERTY token for mutable class parameter");
+    assert_eq!(
+        token.4 & readonly_bit,
+        0,
+        "var class parameter should not be READONLY"
+    );
+}
+
+#[test]
+fn class_parameter_plain_gets_parameter() {
+    let src = "class Foo(x: Int)\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
+
+    assert!(
+        tokens.iter().any(|&(line, col, _, token_type, _)| line == 0
+            && col == 10
+            && token_type == param_type),
+        "expected PARAMETER token for plain class parameter, got: {tokens:?}"
     );
 }
 
@@ -698,6 +714,50 @@ fn param_use_in_body_gets_parameter_token() {
             && tt == param_type
             && (mods & decl_mod) == 0),
         "Expected PARAMETER (no declaration) for 'count' at 2:12, got: {tokens:?}"
+    );
+}
+
+#[test]
+fn param_shadow_by_local_val() {
+    let src = "fun f(x: Int) { val x = 1; println(x) }\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
+
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&(line, _, _, token_type, _)| line == 0 && token_type == param_type)
+            .count(),
+        1,
+        "shadowed local should prevent parameter coloring after the binding, got: {tokens:?}"
+    );
+    assert!(
+        !tokens.iter().any(|&(line, col, _, token_type, _)| line == 0
+            && col == 35
+            && token_type == param_type),
+        "println(x) should not be colored as a parameter after local shadowing, got: {tokens:?}"
+    );
+}
+
+#[test]
+fn param_shadow_for_loop() {
+    let src = "fun f(x: Int) { for (x in listOf(x)) { println(x) } }\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
+
+    assert!(
+        tokens
+            .iter()
+            .any(|&(line, col, _, token_type, _)| line == 0 && col == 33 && token_type == param_type),
+        "iterable x should still be colored as the parameter before the loop binding, got: {tokens:?}"
+    );
+    assert!(
+        !tokens.iter().any(|&(line, col, _, token_type, _)| line == 0
+            && col == 47
+            && token_type == param_type),
+        "loop body x should not be colored as a parameter after the loop binding, got: {tokens:?}"
     );
 }
 
@@ -1250,6 +1310,38 @@ fn deprecated_modifier_set_on_kotlin_declarations() {
 }
 
 #[test]
+fn deprecated_modifier_set_on_java_declarations() {
+    let src = "class Example {\n    @Deprecated int field = 0;\n    @Deprecated void oldMethod() {}\n}\n@Deprecated class OldClass {}\n";
+    let doc = parse_java(src);
+    let tokens = decode_all(&doc, Language::Java);
+    let deprecated_bit = 1u32 << 5;
+    let class_type = type_id(&SemanticTokenType::CLASS);
+    let method_type = type_id(&SemanticTokenType::METHOD);
+    let property_type = type_id(&SemanticTokenType::PROPERTY);
+
+    for token in [
+        tokens
+            .iter()
+            .find(|&&(line, _, _, token_type, _)| line == 4 && token_type == class_type)
+            .expect("expected deprecated Java class token"),
+        tokens
+            .iter()
+            .find(|&&(line, _, _, token_type, _)| line == 1 && token_type == property_type)
+            .expect("expected deprecated Java field token"),
+        tokens
+            .iter()
+            .find(|&&(line, _, _, token_type, _)| line == 2 && token_type == method_type)
+            .expect("expected deprecated Java method token"),
+    ] {
+        assert_ne!(
+            token.4 & deprecated_bit,
+            0,
+            "expected Java declaration to be marked DEPRECATED, token={token:?}, all={tokens:?}"
+        );
+    }
+}
+
+#[test]
 fn companion_members_have_static_modifier() {
     let src = "class Foo {\n    companion object {\n        fun make() = Foo()\n        val value = 1\n    }\n}\n";
     let doc = parse_kotlin(src);
@@ -1310,5 +1402,50 @@ fn abstract_class_method_both_abstract() {
         method_mods & decl_bit,
         0,
         "method should have DECLARATION, mods={method_mods:#b}"
+    );
+}
+
+#[test]
+fn soft_keyword_is_emits_keyword_token() {
+    let src = "fun f(x: Any): Boolean = x is String\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let kw_type = type_id(&SemanticTokenType::KEYWORD);
+    // "is" is at col 27, len 2
+    assert!(
+        tokens
+            .iter()
+            .any(|&(l, c, len, tt, _)| l == 0 && c == 27 && len == 2 && tt == kw_type),
+        "expected KEYWORD for 'is' at (0,27), got: {tokens:?}"
+    );
+}
+
+#[test]
+fn soft_keyword_by_emits_keyword_token() {
+    let src = "val d by lazy { 42 }\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let kw_type = type_id(&SemanticTokenType::KEYWORD);
+    // "by" is at col 6, len 2
+    assert!(
+        tokens
+            .iter()
+            .any(|&(l, c, len, tt, _)| l == 0 && c == 6 && len == 2 && tt == kw_type),
+        "expected KEYWORD for 'by' at (0,6), got: {tokens:?}"
+    );
+}
+
+#[test]
+fn soft_keyword_as_emits_keyword_token() {
+    let src = "fun f(x: Any): Any = x as String\n";
+    let doc = parse_kotlin(src);
+    let tokens = decode_all(&doc, Language::Kotlin);
+    let kw_type = type_id(&SemanticTokenType::KEYWORD);
+    // "as" is at col 23, len 2
+    assert!(
+        tokens
+            .iter()
+            .any(|&(l, c, len, tt, _)| l == 0 && c == 23 && len == 2 && tt == kw_type),
+        "expected KEYWORD for 'as' at (0,23), got: {tokens:?}"
     );
 }

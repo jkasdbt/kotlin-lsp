@@ -12,7 +12,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tower_lsp::lsp_types::Url;
 
-use crate::indexer::live_tree::{lang_for_path, parse_live};
+use crate::indexer::live_tree::{lang_for_path, parse_live, utf16_col_to_byte};
 use crate::indexer::Indexer;
 use crate::semantic_tokens::{collect_tokens, TOKEN_MODIFIERS, TOKEN_TYPES};
 use crate::Language;
@@ -91,12 +91,10 @@ pub(crate) fn token_rows(
         let text = lines
             .get(abs_line as usize)
             .map(|line| {
-                let bytes = line.as_bytes();
-                // col is UTF-16; for ASCII-dominant Kotlin source, byte == UTF-16 col
-                let start = abs_col as usize;
-                let end = (abs_col + tok.length) as usize;
-                if end <= bytes.len() {
-                    &line[start..end]
+                let start_byte = utf16_col_to_byte(line, abs_col as usize);
+                let end_byte = utf16_col_to_byte(line, (abs_col + tok.length) as usize);
+                if end_byte <= line.len() {
+                    &line[start_byte..end_byte]
                 } else {
                     ""
                 }
