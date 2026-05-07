@@ -1003,10 +1003,10 @@ fn classify_kotlin_reference(node: Node<'_>, src: &[u8], indexer: &Indexer) -> O
         return None;
     }
 
-    // Named arguments: `foo(name = value)` — the label gets PROPERTY color
-    // to distinguish from the value (PARAMETER maps to same color as VARIABLE in most themes)
+    // Named arguments: `foo(name = value)` — the label is a parameter reference.
+    // Matches kotlin-lsp (JetBrains) behaviour: resolves to KaValueParameterSymbol → PARAMETER.
     if is_named_argument_label(node) {
-        return Some(type_index(&SemanticTokenType::PROPERTY));
+        return Some(type_index(&SemanticTokenType::PARAMETER));
     }
 
     if is_annotation_reference(node) {

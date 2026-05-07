@@ -496,10 +496,10 @@ fn named_arg_label_gets_property_token() {
     indexer.index_content(&uri, src);
     let doc = parse_kotlin(src);
     let tokens = decode_all_indexed(&indexer, &uri, &doc, Language::Kotlin);
-    // "name" in foo(name = 42) is at line 1, col 17 — emitted as PROPERTY for visual distinction
-    let prop_type = type_id(&SemanticTokenType::PROPERTY);
-    assert!(tokens.iter().any(|t| t.0 == 1 && t.1 == 17 && t.3 == prop_type),
-        "Expected PROPERTY at (1,17) for named arg 'name', got: {tokens:?}");
+    // "name" in foo(name = 42) is at line 1, col 17 — emitted as PARAMETER (JetBrains behaviour)
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
+    assert!(tokens.iter().any(|t| t.0 == 1 && t.1 == 17 && t.3 == param_type),
+        "Expected PARAMETER at (1,17) for named arg 'name', got: {tokens:?}");
 }
 
 #[test]
@@ -510,13 +510,13 @@ fn named_arg_multiline_call() {
     indexer.index_content(&uri, src);
     let doc = parse_kotlin(src);
     let tokens = decode_all_indexed(&indexer, &uri, &doc, Language::Kotlin);
-    let prop_type = type_id(&SemanticTokenType::PROPERTY);
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
     // "modifier" at line 2, col 8
-    assert!(tokens.iter().any(|t| t.0 == 2 && t.3 == prop_type),
-        "Expected PROPERTY on line 2 for 'modifier', got: {tokens:?}");
+    assert!(tokens.iter().any(|t| t.0 == 2 && t.3 == param_type),
+        "Expected PARAMETER on line 2 for 'modifier', got: {tokens:?}");
     // "topBar" at line 3, col 8
-    assert!(tokens.iter().any(|t| t.0 == 3 && t.3 == prop_type),
-        "Expected PROPERTY on line 3 for 'topBar', got: {tokens:?}");
+    assert!(tokens.iter().any(|t| t.0 == 3 && t.3 == param_type),
+        "Expected PARAMETER on line 3 for 'topBar', got: {tokens:?}");
 }
 
 // ─── Phase 2: Comprehensive semantic token coverage ──────────────────────────
@@ -825,9 +825,9 @@ fn named_arg_simple_call() {
     indexer.index_content(&uri, src);
     let doc = parse_kotlin(src);
     let tokens = decode_all_indexed(&indexer, &uri, &doc, Language::Kotlin);
-    let prop_type = type_id(&SemanticTokenType::PROPERTY);
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
     // "x" named arg at line 1, col 17
-    assert_token_at(&tokens, 1, 17, prop_type, "PROPERTY named arg label");
+    assert_token_at(&tokens, 1, 17, param_type, "PARAMETER named arg label");
 }
 
 #[test]
@@ -838,10 +838,10 @@ fn named_arg_not_emitted_for_positional() {
     indexer.index_content(&uri, src);
     let doc = parse_kotlin(src);
     let tokens = decode_all_indexed(&indexer, &uri, &doc, Language::Kotlin);
-    let prop_type = type_id(&SemanticTokenType::PROPERTY);
-    // No PROPERTY token on line 1 for positional arg "42"
-    assert!(!tokens.iter().any(|t| t.0 == 1 && t.1 == 17 && t.3 == prop_type),
-        "Should NOT emit PROPERTY for positional arg, got: {tokens:?}");
+    // No PARAMETER token on line 1 for positional arg "42"
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
+    assert!(!tokens.iter().any(|t| t.0 == 1 && t.1 == 17 && t.3 == param_type),
+        "Should NOT emit PARAMETER for positional arg, got: {tokens:?}");
 }
 
 #[test]
@@ -852,10 +852,10 @@ fn named_arg_multiple_in_one_call() {
     indexer.index_content(&uri, src);
     let doc = parse_kotlin(src);
     let tokens = decode_all_indexed(&indexer, &uri, &doc, Language::Kotlin);
-    let prop_type = type_id(&SemanticTokenType::PROPERTY);
+    let param_type = type_id(&SemanticTokenType::PARAMETER);
     // "a" at line 1, col 15; "b" at line 1, col 22
-    assert_token_at(&tokens, 1, 15, prop_type, "PROPERTY first named arg 'a'");
-    assert_token_at(&tokens, 1, 22, prop_type, "PROPERTY second named arg 'b'");
+    assert_token_at(&tokens, 1, 15, param_type, "PARAMETER first named arg 'a'");
+    assert_token_at(&tokens, 1, 22, param_type, "PARAMETER second named arg 'b'");
 }
 
 // --- Member access (Tier 2) ---
