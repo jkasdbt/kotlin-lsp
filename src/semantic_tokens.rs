@@ -21,12 +21,15 @@ use crate::indexer::{
     find_it_element_type_in_lines, find_this_element_type_in_lines, Indexer, LiveDoc, NodeExt,
 };
 use crate::queries::{
-    KIND_ANNOTATION_TYPE_DECL, KIND_CALL_EXPR, KIND_CLASS_DECL, KIND_COMPANION_OBJ,
-    KIND_CONSTRUCTOR_INVOCATION, KIND_ENUM_CONSTANT, KIND_EQ, KIND_FIELD_DECL, KIND_FUN_DECL,
-    KIND_IDENTIFIER, KIND_INTERFACE_DECL, KIND_LAMBDA_LIT, KIND_LAMBDA_PARAMS, KIND_METHOD_DECL,
-    KIND_MODIFIERS, KIND_MULTI_VAR_DECL, KIND_NAV_EXPR, KIND_NAV_SUFFIX, KIND_OBJECT_DECL,
-    KIND_PROP_DECL, KIND_RECORD_DECL, KIND_SIMPLE_IDENT, KIND_THIS_EXPR, KIND_TYPE_IDENT,
-    KIND_TYPE_PARAM, KIND_VALUE_ARG, KIND_VAR_DECL,
+    KIND_ANNOTATION, KIND_ANNOTATION_TYPE_DECL, KIND_CALL_EXPR, KIND_CLASS_BODY, KIND_CLASS_DECL,
+    KIND_COMPANION_OBJ, KIND_CONSTRUCTOR_INVOCATION, KIND_ENUM_CLASS_BODY, KIND_ENUM_CONSTANT,
+    KIND_ENUM_ENTRY, KIND_ENUM_JAVA_DECL, KIND_EQ, KIND_FIELD_DECL, KIND_FORMAL_PARAM,
+    KIND_FUN_DECL, KIND_IDENTIFIER, KIND_INTERFACE_BODY, KIND_INTERFACE_DECL, KIND_LAMBDA_LIT,
+    KIND_LAMBDA_PARAMS, KIND_MARKER_ANNOTATION, KIND_METHOD_DECL, KIND_MODIFIERS,
+    KIND_MULTI_ANNOTATION, KIND_MULTI_VAR_DECL, KIND_NAV_EXPR, KIND_NAV_SUFFIX, KIND_OBJECT_BODY,
+    KIND_OBJECT_DECL, KIND_PARAMETER, KIND_PROP_DECL, KIND_RECORD_DECL, KIND_SIMPLE_IDENT,
+    KIND_SPREAD_PARAM, KIND_THIS_EXPR, KIND_TYPE_IDENT, KIND_TYPE_PARAM, KIND_USER_TYPE,
+    KIND_VALUE_ARG, KIND_VAR_DECL, KIND_VAR_DECLARATOR,
 };
 use crate::resolver::infer::{
     find_field_type_in_class, find_fun_return_type_by_name, find_method_return_type,
@@ -98,6 +101,27 @@ struct RawToken {
     token_modifiers_bitset: u32,
 }
 
+/// Bundles source bytes with precomputed line-start offsets for O(1) UTF-16
+/// column conversion (avoids re-scanning the entire file per token).
+struct Source<'a> {
+    bytes: &'a [u8],
+    line_starts: Vec<usize>,
+}
+
+impl<'a> Source<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            line_starts: crate::inlay_hints::line_starts(bytes),
+            bytes,
+        }
+    }
+
+    fn col_utf16(&self, row: usize, byte_col: usize) -> u32 {
+        crate::inlay_hints::ts_byte_col_to_utf16(self.bytes, &self.line_starts, row, byte_col)
+            as u32
+    }
+}
+
 /// Collect semantic tokens for `doc`, for the given `language`.
 /// Returns delta-encoded `SemanticToken` values ready for the LSP response.
 /// Filtered to `range` when `Some`.
@@ -112,16 +136,17 @@ pub(crate) fn collect_tokens(
     uri: Option<&Url>,
 ) -> Vec<SemanticToken> {
     let mut raw: Vec<RawToken> = Vec::new();
+    let src = Source::new(&doc.bytes);
 
     match language {
-        Language::Kotlin => walk_kotlin(doc.tree.root_node(), &doc.bytes, &mut raw),
-        Language::Java => walk_java(doc.tree.root_node(), &doc.bytes, &mut raw),
+        Language::Kotlin => walk_kotlin(doc.tree.root_node(), &src, &mut raw),
+        Language::Java => walk_java(doc.tree.root_node(), &src, &mut raw),
         _ => {}
     }
 
     // Phase 2: resolve reference-site identifiers against the index.
     if let (Some(idx), Some(file_uri)) = (indexer, uri) {
-        walk_references(doc, language, idx, file_uri, &mut raw);
+        walk_references(doc, &src, language, idx, file_uri, &mut raw);
     }
 
     // Sort by (line, col) — tree walk is depth-first so usually already sorted,
@@ -144,7 +169,7 @@ pub(crate) fn collect_tokens(
 
 // ─── Kotlin walker ────────────────────────────────────────────────────────────
 
-fn walk_kotlin(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn walk_kotlin(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     classify_kotlin(node, src, out);
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
@@ -157,7 +182,7 @@ fn walk_kotlin(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
     }
 }
 
-fn classify_kotlin(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn classify_kotlin(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let kind = node.kind();
     match kind {
         k if k == KIND_CLASS_DECL => kotlin_class_token(node, src, out),
@@ -166,20 +191,20 @@ fn classify_kotlin(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
         k if k == KIND_FUN_DECL => kotlin_fun_token(node, src, out),
         k if k == KIND_PROP_DECL => kotlin_prop_token(node, src, out),
         k if k == KIND_TYPE_PARAM => kotlin_type_param_token(node, src, out),
-        "parameter" => {
+        KIND_PARAMETER => {
             let mods = modifier_bit(&SemanticTokenModifier::DECLARATION);
-            if let Some(name) = child_ident(node, src) {
+            if let Some(name) = child_ident(node) {
                 push_token(name, type_index(&SemanticTokenType::PARAMETER), mods, src, out);
             }
         }
-        "enum_entry" => {
+        KIND_ENUM_ENTRY => {
             let mods = modifier_bit(&SemanticTokenModifier::DECLARATION)
                 | modifier_bit(&SemanticTokenModifier::READONLY);
-            if let Some(name) = child_ident(node, src) {
+            if let Some(name) = child_ident(node) {
                 push_token(name, type_index(&SemanticTokenType::ENUM_MEMBER), mods, src, out);
             }
         }
-        "annotation" | "multi_annotation" => {
+        KIND_ANNOTATION | KIND_MULTI_ANNOTATION => {
             if let Some(ident) = find_annotation_ident(node) {
                 push_token(ident, type_index(&SemanticTokenType::DECORATOR), 0, src, out);
             }
@@ -188,7 +213,7 @@ fn classify_kotlin(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
     }
 }
 
-fn kotlin_class_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn kotlin_class_token(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let token_type = if has_keyword_child(node, "interface") {
         type_index(&SemanticTokenType::INTERFACE)
     } else if has_keyword_child(node, "enum") {
@@ -202,30 +227,30 @@ fn kotlin_class_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
     if has_modifier(node, src, "abstract") {
         mods |= modifier_bit(&SemanticTokenModifier::ABSTRACT);
     }
-    if let Some(name) = child_ident(node, src) {
+    if let Some(name) = child_ident(node) {
         push_token(name, token_type, mods, src, out);
     }
 }
 
-fn kotlin_object_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn kotlin_object_token(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let mods = modifier_bit(&SemanticTokenModifier::DECLARATION);
-    if let Some(name) = child_ident(node, src) {
+    if let Some(name) = child_ident(node) {
         push_token(name, type_index(&SemanticTokenType::NAMESPACE), mods, src, out);
     }
 }
 
-fn kotlin_companion_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn kotlin_companion_token(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let mods = modifier_bit(&SemanticTokenModifier::DECLARATION)
         | modifier_bit(&SemanticTokenModifier::STATIC);
     let ns_type = type_index(&SemanticTokenType::NAMESPACE);
-    if let Some(name) = child_ident(node, src) {
+    if let Some(name) = child_ident(node) {
         push_token(name, ns_type, mods, src, out);
     } else if let Some(obj_kw) = first_child_of_kind(node, "object") {
         push_token(obj_kw, ns_type, mods, src, out);
     }
 }
 
-fn kotlin_fun_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn kotlin_fun_token(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let token_type = if has_modifier(node, src, "operator") {
         type_index(&SemanticTokenType::OPERATOR)
     } else if is_inside_class_body(node) {
@@ -240,12 +265,12 @@ fn kotlin_fun_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
     if has_modifier(node, src, "abstract") {
         mods |= modifier_bit(&SemanticTokenModifier::ABSTRACT);
     }
-    if let Some(name) = child_ident(node, src) {
+    if let Some(name) = child_ident(node) {
         push_token(name, token_type, mods, src, out);
     }
 }
 
-fn kotlin_prop_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn kotlin_prop_token(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let is_val = first_child_of_kind(node, "binding_pattern_kind")
         .map(|bpk| has_keyword_child(bpk, "val"))
         .unwrap_or_else(|| has_keyword_child(node, "val"));
@@ -259,13 +284,13 @@ fn kotlin_prop_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
         mods |= modifier_bit(&SemanticTokenModifier::READONLY);
     }
     if let Some(var_decl) = first_child_of_kind(node, KIND_VAR_DECL) {
-        if let Some(name) = child_ident(var_decl, src) {
+        if let Some(name) = child_ident(var_decl) {
             push_token(name, token_type, mods, src, out);
         }
     } else if let Some(multi) = first_child_of_kind(node, KIND_MULTI_VAR_DECL) {
         for i in 0..multi.named_child_count() {
             if let Some(vd) = multi.named_child(i) {
-                if let Some(name) = child_ident(vd, src) {
+                if let Some(name) = child_ident(vd) {
                     push_token(name, token_type, mods, src, out);
                 }
             }
@@ -273,7 +298,7 @@ fn kotlin_prop_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
     }
 }
 
-fn kotlin_type_param_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn kotlin_type_param_token(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let mods = modifier_bit(&SemanticTokenModifier::DECLARATION);
     if let Some(ident) = first_child_of_kind(node, KIND_TYPE_IDENT)
         .or_else(|| first_child_of_kind(node, KIND_SIMPLE_IDENT))
@@ -284,7 +309,7 @@ fn kotlin_type_param_token(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) 
 
 // ─── Java walker ─────────────────────────────────────────────────────────────
 
-fn walk_java(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn walk_java(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     classify_java(node, src, out);
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
@@ -297,7 +322,7 @@ fn walk_java(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
     }
 }
 
-fn classify_java(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
+fn classify_java(node: Node<'_>, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let kind = node.kind();
 
     match kind {
@@ -323,7 +348,7 @@ fn classify_java(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
             }
         }
 
-        "enum_declaration" => {
+        KIND_ENUM_JAVA_DECL => {
             let mods = modifier_bit(&SemanticTokenModifier::DECLARATION);
             if let Some(name) = first_child_of_kind(node, KIND_IDENTIFIER) {
                 push_token(name, type_index(&SemanticTokenType::ENUM), mods, src, out);
@@ -351,7 +376,7 @@ fn classify_java(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
             }
             for i in 0..node.child_count() {
                 if let Some(child) = node.child(i) {
-                    if child.kind() == "variable_declarator" {
+                    if child.kind() == KIND_VAR_DECLARATOR {
                         if let Some(name) = first_child_of_kind(child, KIND_IDENTIFIER) {
                             push_token(name, type_index(&SemanticTokenType::PROPERTY), mods, src, out);
                         }
@@ -360,7 +385,7 @@ fn classify_java(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
             }
         }
 
-        "formal_parameter" | "spread_parameter" => {
+        KIND_FORMAL_PARAM | KIND_SPREAD_PARAM => {
             let mods = modifier_bit(&SemanticTokenModifier::DECLARATION);
             if let Some(name) = first_child_of_kind(node, KIND_IDENTIFIER) {
                 push_token(name, type_index(&SemanticTokenType::PARAMETER), mods, src, out);
@@ -385,7 +410,7 @@ fn classify_java(node: Node<'_>, src: &[u8], out: &mut Vec<RawToken>) {
             }
         }
 
-        "marker_annotation" | "annotation" => {
+        KIND_MARKER_ANNOTATION | KIND_ANNOTATION => {
             // @Override, @SuppressWarnings("...") etc.
             if let Some(name) = first_child_of_kind(node, KIND_IDENTIFIER) {
                 push_token(name, type_index(&SemanticTokenType::DECORATOR), 0, src, out);
@@ -409,7 +434,7 @@ fn find_annotation_ident(annotation_node: Node<'_>) -> Option<Node<'_>> {
         return Some(ident);
     }
     // Via user_type: annotation > user_type > type_identifier
-    if let Some(user_type) = first_child_of_kind(annotation_node, "user_type") {
+    if let Some(user_type) = first_child_of_kind(annotation_node, KIND_USER_TYPE) {
         if let Some(ident) = first_child_of_kind(user_type, KIND_TYPE_IDENT)
             .or_else(|| first_child_of_kind(user_type, KIND_SIMPLE_IDENT))
         {
@@ -418,7 +443,7 @@ fn find_annotation_ident(annotation_node: Node<'_>) -> Option<Node<'_>> {
     }
     // Via constructor_invocation: annotation > constructor_invocation > user_type > type_identifier
     if let Some(ctor) = first_child_of_kind(annotation_node, KIND_CONSTRUCTOR_INVOCATION) {
-        if let Some(user_type) = first_child_of_kind(ctor, "user_type") {
+        if let Some(user_type) = first_child_of_kind(ctor, KIND_USER_TYPE) {
             return first_child_of_kind(user_type, KIND_TYPE_IDENT)
                 .or_else(|| first_child_of_kind(user_type, KIND_SIMPLE_IDENT));
         }
@@ -427,7 +452,7 @@ fn find_annotation_ident(annotation_node: Node<'_>) -> Option<Node<'_>> {
 }
 
 /// Find the first direct child with a name identifier (simple_identifier or identifier).
-fn child_ident<'a>(node: Node<'a>, _src: &[u8]) -> Option<Node<'a>> {
+fn child_ident<'a>(node: Node<'a>) -> Option<Node<'a>> {
     for i in 0..node.child_count() {
         let child = node.child(i)?;
         if child.kind() == KIND_SIMPLE_IDENT
@@ -472,12 +497,12 @@ fn has_keyword_child(node: Node<'_>, keyword: &str) -> bool {
 }
 
 /// Check whether a Kotlin node has a modifier keyword (e.g. "suspend", "abstract").
-fn has_modifier(node: Node<'_>, src: &[u8], keyword: &str) -> bool {
+fn has_modifier(node: Node<'_>, src: &Source<'_>, keyword: &str) -> bool {
     // Modifiers are either direct keyword children or inside a `modifiers` node.
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == KIND_MODIFIERS
-                && node_text(child, src).split_whitespace().any(|w| w == keyword)
+                && node_text(child, src.bytes).split_whitespace().any(|w| w == keyword)
             {
                 return true;
             }
@@ -490,11 +515,11 @@ fn has_modifier(node: Node<'_>, src: &[u8], keyword: &str) -> bool {
 }
 
 /// Check whether a Java node has a modifier keyword inside a `modifiers` node.
-fn has_java_modifier(node: Node<'_>, src: &[u8], keyword: &str) -> bool {
+fn has_java_modifier(node: Node<'_>, src: &Source<'_>, keyword: &str) -> bool {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            if child.kind() == "modifiers"
-                && node_text(child, src).split_whitespace().any(|w| w == keyword)
+            if child.kind() == KIND_MODIFIERS
+                && node_text(child, src.bytes).split_whitespace().any(|w| w == keyword)
             {
                 return true;
             }
@@ -506,54 +531,30 @@ fn has_java_modifier(node: Node<'_>, src: &[u8], keyword: &str) -> bool {
 /// True when this node is a direct child of a class/interface/enum body.
 fn is_inside_class_body(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else { return false };
-    matches!(
-        parent.kind(),
-        "class_body" | "interface_body" | "enum_class_body" | "object_body"
-    )
+    let k = parent.kind();
+    k == KIND_CLASS_BODY || k == KIND_INTERFACE_BODY || k == KIND_ENUM_CLASS_BODY || k == KIND_OBJECT_BODY
 }
 
 fn node_text<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
     node.utf8_text(src).unwrap_or("")
 }
 
-fn push_token(node: Node<'_>, token_type: u32, token_modifiers_bitset: u32, src: &[u8], out: &mut Vec<RawToken>) {
+fn push_token(node: Node<'_>, token_type: u32, token_modifiers_bitset: u32, src: &Source<'_>, out: &mut Vec<RawToken>) {
     let start = node.start_position();
-    let text = node_text(node, src);
+    let text = node_text(node, src.bytes);
     let length = text.encode_utf16().count() as u32;
     if length == 0 {
         return;
     }
     out.push(RawToken {
         line: start.row as u32,
-        col: byte_col_to_utf16(src, start.row, start.column),
+        col: src.col_utf16(start.row, start.column),
         length,
         token_type,
         token_modifiers_bitset,
     });
 }
 
-/// Convert a tree-sitter byte-column to a UTF-16 column for LSP.
-fn byte_col_to_utf16(src: &[u8], row: usize, byte_col: usize) -> u32 {
-    let line_start = if row == 0 {
-        0
-    } else {
-        src.iter()
-            .enumerate()
-            .filter(|(_, &b)| b == b'\n')
-            .nth(row - 1)
-            .map(|(i, _)| i + 1)
-            .unwrap_or(0)
-    };
-    let line_bytes = &src[line_start..];
-    let prefix = if byte_col <= line_bytes.len() {
-        &line_bytes[..byte_col]
-    } else {
-        line_bytes
-    };
-    std::str::from_utf8(prefix)
-        .map(|s| s.encode_utf16().count() as u32)
-        .unwrap_or(byte_col as u32)
-}
 
 // ─── Delta encoding ───────────────────────────────────────────────────────────
 
@@ -608,11 +609,11 @@ fn navigation_member_ident(node: Node<'_>) -> Option<Node<'_>> {
     })
 }
 
-fn token_position(doc: &LiveDoc, node: Node<'_>) -> Position {
+fn token_position(bytes: &[u8], starts: &[usize], node: Node<'_>) -> Position {
     let start = node.start_position();
     Position::new(
         start.row as u32,
-        byte_col_to_utf16(&doc.bytes, start.row, start.column),
+        crate::inlay_hints::ts_byte_col_to_utf16(bytes, starts, start.row, start.column) as u32,
     )
 }
 
@@ -748,9 +749,9 @@ fn member_return_type(indexer: &Indexer, receiver_type: &str, member_name: &str)
     find_method_return_type(indexer, receiver_type, member_name)
 }
 
-fn identifier_type(node: Node<'_>, doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Option<String> {
+fn identifier_type(node: Node<'_>, doc: &LiveDoc, starts: &[usize], indexer: &Indexer, uri: &Url) -> Option<String> {
     let name = node.utf8_text_owned(&doc.bytes)?;
-    if let Some(inferred) = indexer.infer_lambda_param_type_at(&name, uri, token_position(doc, node)) {
+    if let Some(inferred) = indexer.infer_lambda_param_type_at(&name, uri, token_position(&doc.bytes, starts, node)) {
         return Some(inferred);
     }
     if let Some(inferred) = infer_variable_type(indexer, &name, uri) {
@@ -765,12 +766,13 @@ fn identifier_type(node: Node<'_>, doc: &LiveDoc, indexer: &Indexer, uri: &Url) 
 fn navigation_expression_type(
     node: Node<'_>,
     doc: &LiveDoc,
+    starts: &[usize],
     indexer: &Indexer,
     uri: &Url,
 ) -> Option<String> {
     let receiver = navigation_receiver_node(node)?;
     let member = navigation_member_ident(node)?.utf8_text_owned(&doc.bytes)?;
-    let receiver_type = expression_type(receiver, doc, indexer, uri)?;
+    let receiver_type = expression_type(receiver, doc, starts, indexer, uri)?;
 
     if is_call_callee(node) {
         return member_return_type(indexer, &receiver_type, &member)
@@ -780,11 +782,11 @@ fn navigation_expression_type(
     find_field_type_in_class(indexer, &receiver_type, &member)
 }
 
-fn call_expression_type(node: Node<'_>, doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Option<String> {
+fn call_expression_type(node: Node<'_>, doc: &LiveDoc, starts: &[usize], indexer: &Indexer, uri: &Url) -> Option<String> {
     let (member, _) = node.call_fn_and_qualifier(&doc.bytes)?;
     if let Some(callee) = node.child(0).filter(|child| child.kind() == KIND_NAV_EXPR) {
         if let Some(receiver) = navigation_receiver_node(callee) {
-            if let Some(receiver_type) = expression_type(receiver, doc, indexer, uri) {
+            if let Some(receiver_type) = expression_type(receiver, doc, starts, indexer, uri) {
                 if let Some(return_type) = member_return_type(indexer, &receiver_type, &member) {
                     return Some(return_type);
                 }
@@ -794,12 +796,12 @@ fn call_expression_type(node: Node<'_>, doc: &LiveDoc, indexer: &Indexer, uri: &
     find_fun_return_type_by_name(indexer, &member)
 }
 
-fn expression_type(node: Node<'_>, doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Option<String> {
+fn expression_type(node: Node<'_>, doc: &LiveDoc, starts: &[usize], indexer: &Indexer, uri: &Url) -> Option<String> {
     match node.kind() {
-        KIND_SIMPLE_IDENT | KIND_TYPE_IDENT => identifier_type(node, doc, indexer, uri),
-        KIND_THIS_EXPR => indexer.infer_lambda_param_type_at("this", uri, token_position(doc, node)),
-        KIND_NAV_EXPR => navigation_expression_type(node, doc, indexer, uri),
-        KIND_CALL_EXPR => call_expression_type(node, doc, indexer, uri),
+        KIND_SIMPLE_IDENT | KIND_TYPE_IDENT => identifier_type(node, doc, starts, indexer, uri),
+        KIND_THIS_EXPR => indexer.infer_lambda_param_type_at("this", uri, token_position(&doc.bytes, starts, node)),
+        KIND_NAV_EXPR => navigation_expression_type(node, doc, starts, indexer, uri),
+        KIND_CALL_EXPR => call_expression_type(node, doc, starts, indexer, uri),
         _ => None,
     }
 }
@@ -820,7 +822,7 @@ fn is_inside_lambda_parameters(node: Node<'_>) -> bool {
 
 /// Resolve member accesses in navigation expressions.
 /// Returns resolved tokens for member identifiers.
-fn resolve_member_access(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<RawToken> {
+fn resolve_member_access(doc: &LiveDoc, src: &Source<'_>, indexer: &Indexer, uri: &Url) -> Vec<RawToken> {
     let mut tokens = Vec::new();
     visit_tree(doc.tree.root_node(), &mut |node| {
         if node.kind() != KIND_NAV_EXPR {
@@ -833,20 +835,20 @@ fn resolve_member_access(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
             return;
         };
         let resolved_type = navigation_receiver_node(node)
-            .and_then(|receiver| expression_type(receiver, doc, indexer, uri))
+            .and_then(|receiver| expression_type(receiver, doc, &src.line_starts, indexer, uri))
             .and_then(|receiver_type| member_token_type_for_receiver(indexer, &receiver_type, &member_name));
         let token_type = resolved_type.or_else(|| {
             is_call_callee(node).then(|| type_index(&SemanticTokenType::METHOD))
         });
         if let Some(token_type) = token_type {
-            push_token(member_ident, token_type, 0, &doc.bytes, &mut tokens);
+            push_token(member_ident, token_type, 0, src, &mut tokens);
         }
     });
     tokens
 }
 
 /// Resolve lambda parameter identifiers (`it`, `this`, named params).
-fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<RawToken> {
+fn resolve_lambda_params(doc: &LiveDoc, src: &Source<'_>, indexer: &Indexer, uri: &Url) -> Vec<RawToken> {
     let mut tokens = Vec::new();
     let lines_arc = indexer.mem_lines_for(uri.as_str());
     let fallback_lines: Vec<String> = std::str::from_utf8(&doc.bytes)
@@ -866,7 +868,7 @@ fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
                             name,
                             type_index(&SemanticTokenType::PARAMETER),
                             modifiers,
-                            &doc.bytes,
+                            src,
                             &mut tokens,
                         );
                     }
@@ -878,8 +880,7 @@ fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
         if node.kind() == KIND_THIS_EXPR && node.enclosing_lambda_literal().is_some() {
             let pos = crate::types::CursorPos {
                 line: node.start_position().row,
-                utf16_col: byte_col_to_utf16(
-                    &doc.bytes,
+                utf16_col: src.col_utf16(
                     node.start_position().row,
                     node.start_position().column,
                 ) as usize,
@@ -889,7 +890,7 @@ fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
                     node,
                     type_index(&SemanticTokenType::KEYWORD),
                     0,
-                    &doc.bytes,
+                    src,
                     &mut tokens,
                 );
             }
@@ -905,8 +906,7 @@ fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
         };
         let pos = crate::types::CursorPos {
             line: node.start_position().row,
-            utf16_col: byte_col_to_utf16(
-                &doc.bytes,
+            utf16_col: src.col_utf16(
                 node.start_position().row,
                 node.start_position().column,
             ) as usize,
@@ -920,7 +920,7 @@ fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
                     node,
                     type_index(&SemanticTokenType::PARAMETER),
                     0,
-                    &doc.bytes,
+                    src,
                     &mut tokens,
                 );
             }
@@ -937,7 +937,7 @@ fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
                 node,
                 type_index(&SemanticTokenType::PARAMETER),
                 0,
-                &doc.bytes,
+                src,
                 &mut tokens,
             );
         }
@@ -951,6 +951,7 @@ fn resolve_lambda_params(doc: &LiveDoc, indexer: &Indexer, uri: &Url) -> Vec<Raw
 /// Emits tokens for type references, function calls, member accesses, etc.
 fn walk_references(
     doc: &LiveDoc,
+    src: &Source<'_>,
     language: Language,
     indexer: &Indexer,
     uri: &Url,
@@ -961,21 +962,21 @@ fn walk_references(
     }
     // Tier 1: direct index lookups (type refs, top-level calls, annotations)
     let mut resolved = Vec::new();
-    walk_kotlin_references(doc.tree.root_node(), &doc.bytes, indexer, &mut resolved);
+    walk_kotlin_references(doc.tree.root_node(), src, indexer, &mut resolved);
     raw.extend(resolved);
 
     // Tier 2: receiver-inferred member coloring
-    raw.extend(resolve_member_access(doc, indexer, uri));
+    raw.extend(resolve_member_access(doc, src, indexer, uri));
 
     // Tier 3: lambda params (it/this)
-    raw.extend(resolve_lambda_params(doc, indexer, uri));
+    raw.extend(resolve_lambda_params(doc, src, indexer, uri));
 }
 
-fn walk_kotlin_references(node: Node<'_>, src: &[u8], indexer: &Indexer, out: &mut Vec<RawToken>) {
+fn walk_kotlin_references(node: Node<'_>, src: &Source<'_>, indexer: &Indexer, out: &mut Vec<RawToken>) {
     // Emit keyword tokens for Kotlin soft keywords
     if is_kotlin_keyword_node(node) {
         push_token(node, type_index(&SemanticTokenType::KEYWORD), 0, src, out);
-    } else if let Some(token_type) = classify_kotlin_reference(node, src, indexer) {
+    } else if let Some(token_type) = classify_kotlin_reference(node, src.bytes, indexer) {
         push_token(node, token_type, 0, src, out);
     }
     let mut cursor = node.walk();
@@ -1002,9 +1003,10 @@ fn classify_kotlin_reference(node: Node<'_>, src: &[u8], indexer: &Indexer) -> O
         return None;
     }
 
-    // Named arguments: `foo(name = value)` — the label gets PARAMETER color
+    // Named arguments: `foo(name = value)` — the label gets PROPERTY color
+    // to distinguish from the value (PARAMETER maps to same color as VARIABLE in most themes)
     if is_named_argument_label(node) {
-        return Some(type_index(&SemanticTokenType::PARAMETER));
+        return Some(type_index(&SemanticTokenType::PROPERTY));
     }
 
     if is_annotation_reference(node) {
@@ -1043,47 +1045,48 @@ fn classify_kotlin_reference(node: Node<'_>, src: &[u8], indexer: &Indexer) -> O
 
 fn is_declaration_site(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else { return false };
-    match parent.kind() {
-        KIND_CLASS_DECL | KIND_OBJECT_DECL | KIND_COMPANION_OBJ | "type_alias" => {
-            node.kind() == KIND_TYPE_IDENT
-        }
-        KIND_FUN_DECL | "parameter" | "enum_entry" | "variable_declaration" | "class_parameter" => {
-            node.kind() == KIND_SIMPLE_IDENT
-        }
-        KIND_TYPE_PARAM => matches!(node.kind(), KIND_SIMPLE_IDENT | KIND_TYPE_IDENT),
-        _ => false,
+    let pk = parent.kind();
+    if pk == KIND_CLASS_DECL || pk == KIND_OBJECT_DECL || pk == KIND_COMPANION_OBJ || pk == "type_alias" {
+        return node.kind() == KIND_TYPE_IDENT;
     }
+    if pk == KIND_FUN_DECL || pk == KIND_PARAMETER || pk == KIND_ENUM_ENTRY || pk == KIND_VAR_DECL || pk == "class_parameter" {
+        return node.kind() == KIND_SIMPLE_IDENT;
+    }
+    if pk == KIND_TYPE_PARAM {
+        return node.kind() == KIND_SIMPLE_IDENT || node.kind() == KIND_TYPE_IDENT;
+    }
+    false
 }
 
 fn is_annotation_reference(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else { return false };
-    if parent.kind() != "user_type" {
+    if parent.kind() != KIND_USER_TYPE {
         return false;
     }
     let Some(grandparent) = parent.parent() else { return false };
     // @Simple annotation: annotation > user_type > type_identifier
-    if matches!(grandparent.kind(), "annotation" | "multi_annotation") {
+    if grandparent.kind() == KIND_ANNOTATION || grandparent.kind() == KIND_MULTI_ANNOTATION {
         return true;
     }
     // @Named("key") annotation: annotation > constructor_invocation > user_type > type_identifier
     if grandparent.kind() == KIND_CONSTRUCTOR_INVOCATION {
         return grandparent
             .parent()
-            .is_some_and(|gp| matches!(gp.kind(), "annotation" | "multi_annotation"));
+            .is_some_and(|gp| gp.kind() == KIND_ANNOTATION || gp.kind() == KIND_MULTI_ANNOTATION);
     }
     false
 }
 
 fn is_type_reference(node: Node<'_>) -> bool {
     node.parent().is_some_and(|parent| {
-        parent.kind() == "user_type"
-            || matches!(parent.kind(), KIND_FUN_DECL | KIND_PROP_DECL | "class_parameter")
+        let k = parent.kind();
+        k == KIND_USER_TYPE || k == KIND_FUN_DECL || k == KIND_PROP_DECL || k == "class_parameter"
     })
 }
 
 fn is_top_level_call_name(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else { return false };
-    parent.kind() == "call_expression"
+    parent.kind() == KIND_CALL_EXPR
         && parent
             .named_child(0)
             .is_some_and(|first_child| first_child.id() == node.id())
@@ -1091,7 +1094,7 @@ fn is_top_level_call_name(node: Node<'_>) -> bool {
 
 fn is_navigation_receiver(node: Node<'_>) -> bool {
     let Some(parent) = node.parent() else { return false };
-    parent.kind() == "navigation_expression"
+    parent.kind() == KIND_NAV_EXPR
         && parent
             .named_child(0)
             .is_some_and(|first_child| first_child.id() == node.id())
