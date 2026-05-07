@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: kotlin-lsp
+            asset: kotlin-lsp-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: kotlin-lsp
+            asset: kotlin-lsp-linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-13
+            binary: kotlin-lsp
+            asset: kotlin-lsp-darwin-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-14
+            binary: kotlin-lsp
+            asset: kotlin-lsp-darwin-aarch64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.asset }}
+          chmod +x dist/${{ matrix.asset }}
+          tar -czf dist/${{ matrix.asset }}.tar.gz -C dist ${{ matrix.asset }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}.tar.gz
+
+  vscode-extension:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare VS Code extension
+        run: |
+          cd contrib/vscode
+          npm install
+
+          # Create platform-specific extensions
+          mkdir -p bin
+
+          # Extract binaries
+          for arch in linux-x86_64 linux-aarch64 darwin-x86_64 darwin-aarch64; do
+            tar -xzf ../../artifacts/kotlin-lsp-${arch}/kotlin-lsp-${arch}.tar.gz -C bin/
+          done
+
+      - name: Update extension version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd contrib/vscode
+          node -e "
+            const pkg = require('./package.json');
+            pkg.version = '${VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Package universal .vsix (no bundled binary)
+        run: |
+          cd contrib/vscode
+          npx @vscode/vsce package --no-dependencies -o ../../kotlin-lsp-${GITHUB_REF_NAME}.vsix
+
+      - name: Package platform .vsix files
+        run: |
+          cd contrib/vscode
+
+          # linux-x64
+          mkdir -p server && cp bin/kotlin-lsp-linux-x86_64 server/kotlin-lsp && chmod +x server/kotlin-lsp
+          npx @vscode/vsce package --no-dependencies --target linux-x64 -o ../../kotlin-lsp-linux-x64-${GITHUB_REF_NAME}.vsix
+          rm -rf server
+
+          # linux-arm64
+          mkdir -p server && cp bin/kotlin-lsp-linux-aarch64 server/kotlin-lsp && chmod +x server/kotlin-lsp
+          npx @vscode/vsce package --no-dependencies --target linux-arm64 -o ../../kotlin-lsp-linux-arm64-${GITHUB_REF_NAME}.vsix
+          rm -rf server
+
+          # darwin-x64
+          mkdir -p server && cp bin/kotlin-lsp-darwin-x86_64 server/kotlin-lsp && chmod +x server/kotlin-lsp
+          npx @vscode/vsce package --no-dependencies --target darwin-x64 -o ../../kotlin-lsp-darwin-x64-${GITHUB_REF_NAME}.vsix
+          rm -rf server
+
+          # darwin-arm64
+          mkdir -p server && cp bin/kotlin-lsp-darwin-aarch64 server/kotlin-lsp && chmod +x server/kotlin-lsp
+          npx @vscode/vsce package --no-dependencies --target darwin-arm64 -o ../../kotlin-lsp-darwin-arm64-${GITHUB_REF_NAME}.vsix
+          rm -rf server
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-packages
+          path: "*.vsix"
+
+  release:
+    needs: [build, vscode-extension]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir release
+          cp artifacts/kotlin-lsp-*/kotlin-lsp-*.tar.gz release/
+          cp artifacts/vsix-packages/*.vsix release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          draft: false
