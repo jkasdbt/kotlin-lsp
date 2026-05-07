@@ -54,6 +54,7 @@ pub(crate) struct CliArgs {
     pub mode: Mode,
     pub fmt: OutputFmt,
     pub root: Option<PathBuf>,
+    pub verbose: bool,
 }
 
 impl CliArgs {
@@ -78,6 +79,7 @@ impl CliArgs {
             mode: parsed.mode,
             fmt: parsed.fmt,
             root: parsed.root,
+            verbose: parsed.verbose,
         }))
     }
 }
@@ -90,6 +92,7 @@ struct ParsedCliFlags {
     cst_only: bool,
     phases: bool,
     show_tree: bool,
+    verbose: bool,
 }
 
 fn parse_first_argument(args: &mut lexopt::Parser) -> Result<Option<std::ffi::OsString>, String> {
@@ -129,6 +132,7 @@ fn parse_cli_flags(args: &mut lexopt::Parser) -> Result<ParsedCliFlags, String> 
         cst_only: false,
         phases: false,
         show_tree: false,
+        verbose: false,
     };
 
     loop {
@@ -140,6 +144,7 @@ fn parse_cli_flags(args: &mut lexopt::Parser) -> Result<ParsedCliFlags, String> 
             Some(lexopt::Arg::Long("cst-only")) => parsed.cst_only = true,
             Some(lexopt::Arg::Long("phases")) => parsed.phases = true,
             Some(lexopt::Arg::Long("tree")) => parsed.show_tree = true,
+            Some(lexopt::Arg::Short('v') | lexopt::Arg::Long("verbose")) => parsed.verbose = true,
             Some(lexopt::Arg::Long("root")) => {
                 let value = args.value().map_err(|e| e.to_string())?;
                 parsed.root = Some(PathBuf::from(value.to_string_lossy().as_ref()));
@@ -272,6 +277,7 @@ OPTIONS:
     --cst-only      (tokens) Skip index; CST classification only
     --phases        (tokens) Show per-phase token breakdown with dedup markers
     --tree          (tokens) Also print the parse tree after tokens
+    -v, --verbose   Show progress messages (indexing, cache status)
     -h, --help      Print this help
     -V, --version   Print version
 

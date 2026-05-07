@@ -84,7 +84,6 @@ class DashboardProductsViewModel @javax.inject.Inject constructor(
 }
 "#;
     let hints = hints_for(src);
-    eprintln!("inject_constructor hints: {hints:?}");
     assert!(
         hints
             .iter()
@@ -124,11 +123,9 @@ class Vm {
 }
 "#;
     let hints = hints_for(src);
-    eprintln!("nested_named_arg hints: {hints:?}");
     let has_string = hints
         .iter()
         .any(|h| matches!(&h.label, InlayHintLabel::String(s) if s == ": String"));
-    eprintln!("has_string={has_string}");
     assert!(
         has_string,
         "expected ': String' hint for it/loanId in nested named-arg lambda, got: {hints:?}"
@@ -179,14 +176,12 @@ class Vm {
             end: Position::new(lines, 0),
         },
     );
-    eprintln!("cross_file hints: {hints:?}");
     let has_string = hints
         .iter()
         .any(|h| matches!(&h.label, InlayHintLabel::String(s) if s == ": String"));
     let has_card = hints
         .iter()
         .any(|h| matches!(&h.label, InlayHintLabel::String(s) if s == ": CardProduct"));
-    eprintln!("has_string={has_string} has_card={has_card}");
     assert!(
         has_string,
         "expected ': String' hint for it in cross-file named-arg lambda, got: {hints:?}"

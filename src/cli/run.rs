@@ -109,36 +109,41 @@ fn fast_refs(name: &str, root: &Path) -> Vec<CliResult> {
 pub(crate) async fn run(args: CliArgs) {
     let root = resolve_root(args.root.as_deref());
     let json = args.fmt == OutputFmt::Json;
+    let verbose = args.verbose;
 
     match args.subcommand {
-        Subcommand::Index => run_index(&root).await,
-        Subcommand::Find { name } => run_find(&root, args.mode, json, &name).await,
-        Subcommand::Refs { name } => run_refs(&root, args.mode, json, &name).await,
+        Subcommand::Index => run_index(&root, verbose).await,
+        Subcommand::Find { name } => run_find(&root, args.mode, json, verbose, &name).await,
+        Subcommand::Refs { name } => run_refs(&root, args.mode, json, verbose, &name).await,
         Subcommand::Hover { file, line, col } => {
-            run_hover(&root, args.mode, json, &file, line, col).await
+            run_hover(&root, args.mode, json, verbose, &file, line, col).await
         }
         Subcommand::Tokens {
             file,
             cst_only,
             phases,
             show_tree,
-        } => run_tokens(&root, json, &file, cst_only, phases, show_tree).await,
+        } => run_tokens(&root, json, verbose, &file, cst_only, phases, show_tree).await,
         Subcommand::Tree { file } => run_tree(&file),
     }
 }
 
-async fn run_index(root: &Path) {
-    eprintln!("Indexing workspace: {}", root.display());
+async fn run_index(root: &Path, verbose: bool) {
+    if verbose {
+        eprintln!("Indexing workspace: {}", root.display());
+    }
     let index = build_index(root).await;
-    eprintln!(
-        "Done: {} files, {} symbols",
-        index.files.len(),
-        index.definitions.len()
-    );
+    if verbose {
+        eprintln!(
+            "Done: {} files, {} symbols",
+            index.files.len(),
+            index.definitions.len()
+        );
+    }
 }
 
-async fn run_find(root: &Path, mode: Mode, json: bool, name: &str) {
-    let results = match effective_mode(mode, root, "find") {
+async fn run_find(root: &Path, mode: Mode, json: bool, verbose: bool, name: &str) {
+    let results = match effective_mode(mode, root, "find", verbose) {
         Mode::Fast => fast_find(name, root),
         _ => {
             let index = build_index(root).await;
@@ -153,8 +158,8 @@ async fn run_find(root: &Path, mode: Mode, json: bool, name: &str) {
     print_results(&results, json);
 }
 
-async fn run_refs(root: &Path, mode: Mode, json: bool, name: &str) {
-    let results = match effective_mode(mode, root, "refs") {
+async fn run_refs(root: &Path, mode: Mode, json: bool, verbose: bool, name: &str) {
+    let results = match effective_mode(mode, root, "refs", verbose) {
         Mode::Fast => fast_refs(name, root),
         _ => {
             let index = build_index(root).await;
@@ -165,8 +170,8 @@ async fn run_refs(root: &Path, mode: Mode, json: bool, name: &str) {
     print_results(&results, json);
 }
 
-async fn run_hover(root: &Path, mode: Mode, json: bool, file: &Path, line: u32, col: u32) {
-    if effective_mode(mode, root, "hover") == Mode::Fast {
+async fn run_hover(root: &Path, mode: Mode, json: bool, verbose: bool, file: &Path, line: u32, col: u32) {
+    if effective_mode(mode, root, "hover", verbose) == Mode::Fast {
         eprintln!("hover requires index; run `kotlin-lsp index` first or remove --fast");
         std::process::exit(1);
     }
@@ -186,7 +191,7 @@ async fn run_hover(root: &Path, mode: Mode, json: bool, file: &Path, line: u32, 
     }
 }
 
-async fn run_tokens(root: &Path, json: bool, file: &Path, cst_only: bool, phases: bool, show_tree: bool) {
+async fn run_tokens(root: &Path, json: bool, _verbose: bool, file: &Path, cst_only: bool, phases: bool, show_tree: bool) {
     let index = if cst_only && !phases {
         None
     } else {
@@ -237,7 +242,7 @@ fn exit_if_empty(results: &[CliResult], json: bool, message: &str) {
 
 // ── Mode resolution ───────────────────────────────────────────────────────────
 
-fn effective_mode(requested: Mode, root: &Path, subcommand: &str) -> Mode {
+fn effective_mode(requested: Mode, root: &Path, subcommand: &str, verbose: bool) -> Mode {
     match requested {
         Mode::Fast => Mode::Fast,
         Mode::Smart => {
@@ -258,11 +263,13 @@ fn effective_mode(requested: Mode, root: &Path, subcommand: &str) -> Mode {
                     // hover can't work without index; report clearly
                     return Mode::Smart; // will build index
                 }
-                eprintln!(
-                    "note: no index cache found for {}; using rg/fd (fast mode). \
-                     Run `kotlin-lsp index` for precise results.",
-                    root.display()
-                );
+                if verbose {
+                    eprintln!(
+                        "note: no index cache found for {}; using rg/fd (fast mode). \
+                         Run `kotlin-lsp index` for precise results.",
+                        root.display()
+                    );
+                }
                 Mode::Fast
             }
         }
