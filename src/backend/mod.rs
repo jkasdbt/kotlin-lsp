@@ -1051,8 +1051,9 @@ impl LanguageServer for Backend {
         let Some(doc) = self.indexer.live_trees.get(&uri).map(|r| Arc::clone(&r)) else {
             return Ok(None);
         };
+        let parsed_uri = params.text_document.uri;
         Ok(Some(SemanticTokensResult::Tokens(
-            semantic_tokens::full_tokens(&doc, language),
+            semantic_tokens::full_tokens(&self.indexer, &parsed_uri, &doc, language),
         )))
     }
 
@@ -1067,8 +1068,9 @@ impl LanguageServer for Backend {
         let Some(doc) = self.indexer.live_trees.get(&uri).map(|r| Arc::clone(&r)) else {
             return Ok(None);
         };
+        let parsed_uri = params.text_document.uri;
         Ok(Some(SemanticTokensRangeResult::Tokens(
-            semantic_tokens::range_tokens(&doc, language, &params.range),
+            semantic_tokens::range_tokens(&self.indexer, &parsed_uri, &doc, language, &params.range),
         )))
     }
 }

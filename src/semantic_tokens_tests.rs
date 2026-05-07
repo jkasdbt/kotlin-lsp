@@ -1,9 +1,11 @@
-use tower_lsp::lsp_types::{Position, Range, SemanticTokenType};
+use tower_lsp::lsp_types::{Position, Range, SemanticTokenType, Url};
 use tree_sitter_kotlin;
 
-use crate::indexer::live_tree::parse_live;
+use crate::indexer::{live_tree::parse_live, Indexer};
 use crate::Language;
-use crate::semantic_tokens::{full_tokens, range_tokens, TOKEN_TYPES};
+use crate::semantic_tokens::{
+    full_tokens, full_tokens_cst_only, range_tokens_cst_only, TOKEN_TYPES,
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -20,14 +22,7 @@ fn type_id(t: &SemanticTokenType) -> u32 {
     TOKEN_TYPES.iter().position(|x| x == t).unwrap() as u32
 }
 
-/// Decode one SemanticToken from the delta-encoded stream.
-/// Returns (line, col, len, token_type, modifiers) for the token at
-/// absolute position `index` in the stream.
-fn decode_all(
-    doc: &crate::indexer::LiveDoc,
-    language: Language,
-) -> Vec<(u32, u32, u32, u32, u32)> {
-    let tokens = full_tokens(doc, language);
+fn decode_tokens(tokens: &tower_lsp::lsp_types::SemanticTokens) -> Vec<(u32, u32, u32, u32, u32)> {
     let mut line = 0u32;
     let mut col = 0u32;
     tokens
@@ -43,6 +38,35 @@ fn decode_all(
             (line, col, t.length, t.token_type, t.token_modifiers_bitset)
         })
         .collect()
+}
+
+/// Decode one SemanticToken from the delta-encoded stream.
+fn decode_all(doc: &crate::indexer::LiveDoc, language: Language) -> Vec<(u32, u32, u32, u32, u32)> {
+    decode_tokens(&full_tokens_cst_only(doc, language))
+}
+
+fn decode_all_indexed(
+    indexer: &Indexer,
+    uri: &Url,
+    doc: &crate::indexer::LiveDoc,
+    language: Language,
+) -> Vec<(u32, u32, u32, u32, u32)> {
+    decode_tokens(&full_tokens(indexer, uri, doc, language))
+}
+
+fn assert_token_at(
+    tokens: &[(u32, u32, u32, u32, u32)],
+    line: u32,
+    col: u32,
+    token_type: u32,
+    label: &str,
+) {
+    assert!(
+        tokens
+            .iter()
+            .any(|&(token_line, token_col, _, kind, _)| token_line == line && token_col == col && kind == token_type),
+        "expected {label} token at {line}:{col}, got: {tokens:?}"
+    );
 }
 
 // ─── Kotlin tests ─────────────────────────────────────────────────────────────
@@ -199,7 +223,7 @@ fun bar() {}
         start: Position { line: 1, character: 0 },
         end: Position { line: 1, character: 9 },
     };
-    let tokens = range_tokens(&doc, Language::Kotlin, &range);
+    let tokens = range_tokens_cst_only(&doc, Language::Kotlin, &range);
     // Should have tokens only on line 1
     let decoded: Vec<_> = {
         let mut line = 0u32;
@@ -221,6 +245,91 @@ fun bar() {}
     assert!(
         decoded.iter().all(|&l| l == 1),
         "range_tokens should only return tokens on line 1, got lines: {decoded:?}"
+    );
+}
+
+#[test]
+fn kotlin_reference_sites_resolve_types_functions_and_namespaces() {
+    let src = "class User\nobject Utils { fun run() {} }\nfun greet(): User = User()\nfun use(): User {\n    greet()\n    Utils.run()\n    return User()\n}\n";
+    let uri = Url::parse("file:///semantic_tokens_refs.kt").unwrap();
+    let indexer = Indexer::new();
+    indexer.index_content(&uri, src);
+    let doc = parse_kotlin(src);
+    let tokens = decode_all_indexed(&indexer, &uri, &doc, Language::Kotlin);
+
+    assert_token_at(
+        &tokens,
+        2,
+        13,
+        type_id(&SemanticTokenType::CLASS),
+        "CLASS return type",
+    );
+    assert_token_at(
+        &tokens,
+        2,
+        20,
+        type_id(&SemanticTokenType::CLASS),
+        "CLASS constructor call",
+    );
+    assert_token_at(
+        &tokens,
+        3,
+        11,
+        type_id(&SemanticTokenType::CLASS),
+        "CLASS function return type",
+    );
+    assert_token_at(
+        &tokens,
+        4,
+        4,
+        type_id(&SemanticTokenType::FUNCTION),
+        "FUNCTION call",
+    );
+    assert_token_at(
+        &tokens,
+        5,
+        4,
+        type_id(&SemanticTokenType::NAMESPACE),
+        "NAMESPACE receiver",
+    );
+    assert_token_at(
+        &tokens,
+        6,
+        11,
+        type_id(&SemanticTokenType::CLASS),
+        "CLASS return expression",
+    );
+}
+
+#[test]
+fn kotlin_reference_sites_resolve_annotations_and_enum_entries() {
+    let src = "annotation class Fancy\nenum class Color { RED }\n@Fancy\nfun color(): Color = Color.RED\n";
+    let uri = Url::parse("file:///semantic_tokens_annotations.kt").unwrap();
+    let indexer = Indexer::new();
+    indexer.index_content(&uri, src);
+    let doc = parse_kotlin(src);
+    let tokens = decode_all_indexed(&indexer, &uri, &doc, Language::Kotlin);
+
+    assert_token_at(
+        &tokens,
+        2,
+        1,
+        type_id(&SemanticTokenType::DECORATOR),
+        "DECORATOR annotation reference",
+    );
+    assert_token_at(
+        &tokens,
+        3,
+        13,
+        type_id(&SemanticTokenType::ENUM),
+        "ENUM return type",
+    );
+    assert_token_at(
+        &tokens,
+        3,
+        27,
+        type_id(&SemanticTokenType::ENUM_MEMBER),
+        "ENUM_MEMBER reference",
     );
 }
 
@@ -308,7 +417,7 @@ class Foo {
 }
 "#;
     let doc = parse_kotlin(src);
-    let tokens = full_tokens(&doc, Language::Kotlin);
+    let tokens = full_tokens_cst_only(&doc, Language::Kotlin);
     // delta_line must never be negative (tokens must be in order)
     for t in &tokens.data {
         assert!(
@@ -321,7 +430,7 @@ class Foo {
 #[test]
 fn empty_file_returns_no_tokens() {
     let doc = parse_kotlin("");
-    let tokens = full_tokens(&doc, Language::Kotlin);
+    let tokens = full_tokens_cst_only(&doc, Language::Kotlin);
     assert!(tokens.data.is_empty(), "empty file should produce no tokens");
 }
 
