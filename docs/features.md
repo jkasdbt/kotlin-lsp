@@ -125,7 +125,54 @@ Go-to-definition resolves symbols in this order:
 - **Live line scanning** — dot-detection uses the current document text (not the debounced index) so typing `.`, deleting it, and re-typing it always works correctly.
 - **Visibility filtering** — `private` members are hidden from dot-completion; `protected`/`internal` members are shown.
 
-## Definition / Go-to
+## Completion ranking
+
+Completions are scored by match quality:
+
+| Score | Match type | Example |
+|---|---|---|
+| 0 | Exact prefix (case-insensitive) | `Col` → **Col**umn |
+| 1 | CamelCase acronym | `CB` → **C**olumn**B**utton |
+| 2 | Substring (same-file/package only) | `View` → RecyclerView |
+
+Results are capped at 150 items; `isIncomplete: true` is returned so the client re-queries as you type.
+
+**Context-aware filtering:**
+- Lowercase prefix → only functions, vars, params
+- Uppercase prefix → only classes, objects, types
+- `@` prefix → only annotation/class kinds
+- Cross-package symbols require prefix ≥ 2 characters
+
+## Auto-import
+
+When completing an unimported symbol:
+
+- Start typing a class name (uppercase, ≥ 2 chars) → candidates appear from all indexed files including `sourcePaths`
+- Select a candidate → symbol inserted **and** `import pkg.ClassName` added at the correct position
+- Same-named classes from different packages appear as separate items with the package in the detail column
+- Already-imported symbols appear without a duplicate edit
+- Star imports (`import pkg.*`) are respected — no redundant explicit import added
+
+## Ignore pattern semantics
+
+| Pattern | Matches |
+|---|---|
+| `bazel-*` | Any dir/file named `bazel-*` at **any depth** |
+| `third-party/**` | Everything inside `third-party/` relative to workspace root |
+| `/abs/path/**` | Absolute path — normalized to relative before matching |
+
+Patterns apply to both `fd` (fast path) and the `walkdir` fallback, and filter the warm-start cached manifest so newly added patterns take effect without clearing the cache.
+
+## Source path behaviour
+
+| Behaviour | `sourcePaths` files |
+|---|---|
+| Hover / go-to-definition | ✓ |
+| Autocomplete | ✓ |
+| `findReferences` | ✗ (excluded) |
+| `rename` | ✗ (excluded) |
+
+Paths can be absolute (including `~/…`) or relative to the workspace root. The full path is trusted — standard excludes (`.gradle`, `build`, `target`) are not applied.
 
 - Single-hop: `ClassName`, `functionName`, `CONSTANT`
 - Multi-hop field chains: `account.profile.email`

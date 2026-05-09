@@ -1,7 +1,7 @@
 # kotlin-lsp
 
 A fast, low-memory LSP server for **Kotlin**, **Java**, and **Swift**, written in Rust.  
-Built with [tower-lsp](https://github.com/ebkalderon/tower-lsp) and [tree-sitter](https://tree-sitter.github.io/), designed for large Android/JVM/iOS codebases where heavier LSP servers feel sluggish.
+Built with [tree-sitter](https://tree-sitter.github.io/) — instant startup, no JVM.
 
 ![kotlin-lsp demo](demo/demo.gif)
 
@@ -11,21 +11,16 @@ Built with [tower-lsp](https://github.com/ebkalderon/tower-lsp) and [tree-sitter
 cargo install kotlin-lsp
 ```
 
-> **Rust/Cargo not installed?** Get it via [rustup](https://rustup.rs):
-> ```bash
-> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-> ```
-> After install, `kotlin-lsp` lands in `~/.cargo/bin/` — make sure it's on your `PATH`.
+> No Cargo? Get it at [rustup.rs](https://rustup.rs). After install, `kotlin-lsp` is at `~/.cargo/bin/` — make sure it's on your `PATH`.
 
-> **Optional runtime tools** — `fd` and `rg` (ripgrep) improve performance but are not required.  
-> Without them, kotlin-lsp uses built-in `walkdir` for file discovery and tree-sitter for parsing.  
-> macOS: `brew install fd ripgrep`  
-> Debian/Ubuntu: `apt install fd-find ripgrep`
+**Optional:** Install `fd` and `rg` (ripgrep) for faster file discovery and cross-file search.
 
-## Quick start (Helix)
+## Quick start
+
+**1. Wire up your editor:**
 
 ```toml
-# ~/.config/helix/languages.toml
+# Helix — ~/.config/helix/languages.toml
 [[language]]
 name = "kotlin"
 language-servers = ["kotlin-lsp"]
@@ -34,15 +29,26 @@ language-servers = ["kotlin-lsp"]
 name = "java"
 language-servers = ["kotlin-lsp"]
 
-[[language]]
-name = "swift"
-language-servers = ["kotlin-lsp"]
-
 [language-server.kotlin-lsp]
 command = "kotlin-lsp"
 ```
 
-More editors: [Neovim, VS Code, Zed →](docs/editors.md)
+[Neovim, VS Code, Zed setup →](docs/editors.md)
+
+**2. Open a Kotlin/Java file.** The server indexes your workspace in the background — hover, go-to-definition, and completions work immediately via `rg` fallback while indexing runs.
+
+**3. Index library sources** (optional, for hover and completions on third-party code):
+
+```bash
+kotlin-lsp extract-sources          # extracts *-sources.jar from ~/.gradle
+```
+
+Then add to your editor config:
+
+```toml
+[language-server.kotlin-lsp.config.indexingOptions]
+sourcePaths = ["~/.kotlin-lsp/sources"]
+```
 
 ---
 
@@ -52,7 +58,7 @@ More editors: [Neovim, VS Code, Zed →](docs/editors.md)
 |---|---|
 | **Go-to-definition** | Index → superclass hierarchy → `rg` fallback. Multi-hop chains, lambda params, `this`/`super` |
 | **Hover** | Declaration signature, lambda param types, Kotlin stdlib docs |
-| **Completion** | Dot-completion with type resolution, bare-word, auto-import, scored ranking, stdlib entries, visibility filtering |
+| **Completion** | Dot-completion with type resolution, auto-import, scored ranking, stdlib entries |
 | **References** | Project-wide `rg --word-regexp` + open buffers |
 | **Document/workspace symbol** | Outline view, fuzzy search, dot-qualified extension function queries |
 | **Rename** | Project-wide via `WorkspaceEdit` |
@@ -62,13 +68,11 @@ More editors: [Neovim, VS Code, Zed →](docs/editors.md)
 | **Go-to-implementation** | Transitive subtype lookup (BFS) |
 | **Signature help** | Active parameter highlighting |
 | **Folding** | Brace regions + consecutive comment blocks |
-| **CLI mode** | `find`, `refs`, `hover`, `index`, `tokens`, `tree` subcommands — no daemon, scriptable |
+| **CLI mode** | `find`, `refs`, `hover`, `index`, `tokens`, `tree`, `sources`, `extract-sources` — scriptable, no daemon |
 
-All features work immediately — `rg` fallback handles symbols before indexing finishes (applies to Kotlin, Java and Swift).
+All features work immediately — `rg` fallback handles symbols before indexing finishes.
 
-[Full feature details →](docs/features.md)
-
-## What gets indexed
+### What gets indexed
 
 | Language | Symbols |
 |---|---|
@@ -78,187 +82,76 @@ All features work immediately — `rg` fallback handles symbols before indexing 
 
 ---
 
-## CLI mode
+## CLI
 
-`kotlin-lsp` also works as a standalone command-line tool — no daemon, no editor, just results on stdout.
+`kotlin-lsp` works standalone — no editor, no daemon.
 
 ![kotlin-lsp CLI demo](demo/cli.gif)
 
 ```bash
-# Find declarations
-kotlin-lsp find MyViewModel
-
-# Find all references (fast: rg only, no index required)
-kotlin-lsp refs --fast MyViewModel --root ./android
-
-# Hover info at a position
-kotlin-lsp hover src/Foo.kt 42 10
-
-# Pre-build the index (subsequent find/refs/hover calls load from cache)
-kotlin-lsp index --root ./android
-
-# JSON output
-kotlin-lsp find --json MyViewModel
+kotlin-lsp find MyViewModel              # search declarations
+kotlin-lsp refs MyViewModel              # find all references
+kotlin-lsp hover src/Foo.kt 42 10        # hover info at line 42, col 10
+kotlin-lsp index --root ./android        # pre-build cache
+kotlin-lsp sources --root ./android      # list detected source roots
+kotlin-lsp extract-sources               # unpack library sources from Gradle cache
 ```
-
-**Modes:**
 
 | Flag | Behaviour |
 |---|---|
-| _(none)_ | Auto: use cached index if available, fall back to fast rg/fd |
-| `--fast` | Always use rg/fd; instant startup, no index needed |
+| _(none)_ | Auto: use cached index if available, fall back to fast `rg`/`fd` |
+| `--fast` | Always use `rg`/`fd`; instant, no index needed |
 | `--smart` | Require index; build it if missing |
+| `--json` | Machine-readable output |
+| `--root <dir>` | Workspace root (default: nearest `.git` dir) |
 
-```
-kotlin-lsp tokens src/Foo.kt           # semantic tokens (CST-only, fast)
-kotlin-lsp tokens --resolve src/Foo.kt # semantic tokens with cross-file resolution
-
-kotlin-lsp --help        # full usage
-kotlin-lsp --version
-```
+[Full CLI reference →](docs/features.md#cli-subcommands)
 
 ---
 
 ## Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `KOTLIN_LSP_MAX_FILES` | `2000` | Max files indexed eagerly. Deeper files resolved on-demand. |
-| `KOTLIN_LSP_WORKSPACE_ROOT` | _(auto)_ | Override workspace root. Default: LSP client's `rootUri` (your CWD). |
+### Workspace root
 
-The workspace root resolution order:
-1. `KOTLIN_LSP_WORKSPACE_ROOT` env var — always wins, pins the workspace
-2. LSP client `rootUri` / `workspaceFolders` — used when the editor sends a root (normal Helix/Neovim session)
-3. `~/.config/kotlin-lsp/workspace` file — fallback for clients that send no root (e.g. Copilot CLI agentic use)
+Resolved in order:
+
+1. `KOTLIN_LSP_WORKSPACE_ROOT` env var
+2. LSP client `rootUri` / `workspaceFolders`
+3. `~/.config/kotlin-lsp/workspace` file (for clients that send no root)
 
 ### Ignore patterns
 
-Exclude directories or files from indexing using `initializationOptions`:
-
 ```toml
 # ~/.config/helix/languages.toml
 [language-server.kotlin-lsp.config.indexingOptions]
-ignorePatterns = [
-  "bazel-bin/**",   # Bazel output tree (symlinked — avoids double-indexing)
-  "bazel-out/**",
-  "bazel-*",        # any bazel-* dir at any depth (bare pattern)
-  "third-party/**",
-  "build/**",
-]
+ignorePatterns = ["bazel-*", "build/**", "third-party/**"]
 ```
 
-Pattern semantics follow gitignore glob rules:
-
-| Pattern | Matches |
-|---|---|
-| `bazel-*` | Any dir/file named `bazel-*` at **any depth** |
-| `third-party/**` | Everything inside `third-party/` relative to workspace root |
-| `/abs/path/**` | Absolute path — normalized to relative before matching |
-
-Patterns are applied to both `fd` (fast path) and the `walkdir` fallback, and also filter the warm-start cached manifest so newly added patterns take effect without clearing the cache.
+Patterns follow gitignore glob rules and apply to both `fd` and `walkdir` fallback.
 
 ### Source paths
 
-Index extra directories (like library sources or generated stubs) for hover, go-to-definition and autocomplete — while keeping them out of `findReferences` and rename results:
-
-```toml
-# ~/.config/helix/languages.toml
-[language-server.kotlin-lsp.config.indexingOptions]
-sourcePaths = [
-  "~/.kotlin-lsp/sources",  # extracted Gradle library sources (see below)
-  "buildSrc/src",           # relative to workspace root
-]
-```
-
-| Behaviour | `sourcePaths` files |
-|---|---|
-| Hover / go-to-definition | ✓ |
-| Autocomplete | ✓ |
-| `findReferences` | ✗ (excluded) |
-| `rename` | ✗ (excluded) |
-
-- Paths can be absolute (including `~/…`), or relative to the workspace root.
-- Unlike `ignorePatterns`, hardcoded directory excludes (`.gradle`, `build`, `target`, …) are **not** applied — the full path is trusted.
-- Files that happen to overlap with the workspace root are indexed but **not** excluded from findReferences (they are workspace files, not library sources).
-
-#### Extracting Gradle library sources
-
-Use the included script to unpack `*-sources.jar` files from your Gradle cache:
-
-```bash
-# Extract all androidx.compose sources (latest version of each artifact)
-python3 contrib/extract-sources.py androidx.compose
-
-# Multiple filters
-python3 contrib/extract-sources.py androidx.compose org.jetbrains.kotlinx
-
-# Extract everything (can be large)
-python3 contrib/extract-sources.py
-
-# Preview without writing files
-python3 contrib/extract-sources.py --dry-run androidx.compose
-
-# Custom Gradle home / output dir
-python3 contrib/extract-sources.py --gradle-home ~/work/.gradle --output ~/my-sources androidx.compose
-```
-
-Sources are extracted to `~/.kotlin-lsp/sources/<group>.<artifact>/`. Re-run the script after `./gradlew build` to pick up new dependencies. The script deduplicates by keeping only the latest downloaded version of each artifact.
-
-Then add the output directory to your LSP config (printed at the end of each run):
+Index extra directories (library sources, generated stubs) for hover and completions — excluded from `findReferences` and `rename`:
 
 ```toml
 [language-server.kotlin-lsp.config.indexingOptions]
-sourcePaths = ["~/.kotlin-lsp/sources"]
+sourcePaths = ["~/.kotlin-lsp/sources", "buildSrc/src"]
 ```
 
-### Auto-import
+Run `kotlin-lsp extract-sources` to populate `~/.kotlin-lsp/sources` from your Gradle cache. Re-run after `./gradlew build` to pick up new dependencies.
 
-When completing an unimported symbol (class, interface, object), kotlin-lsp automatically adds the import statement:
-
-- Start typing a class name (uppercase, ≥ 2 chars) → completion shows candidates from all indexed files including `sourcePaths`
-- Select a candidate → the symbol is inserted **and** `import pkg.ClassName` is added at the correct position
-- If two classes share the same name (e.g. `Button` from `material` and `material3`), both appear with their package shown in the detail column — pick the right one
-- Already-imported symbols appear without a duplicate edit
-- Same-package symbols appear without any import edit
-- Star imports (`import pkg.*`) are respected — no redundant explicit import added
-
-### Completion ranking
-
-Completions are scored by match quality so the most relevant items appear first:
-
-| Score | Match type | Example |
-|---|---|---|
-| 0 | Exact prefix (case-insensitive) | `Col` → **Col**umn |
-| 1 | CamelCase acronym | `CB` → **C**olumn**B**utton, `mSF` → **m**y**S**tate**F**low |
-| 2 | Substring (same-file/package only) | `View` → RecyclerView |
-
-Results are capped at 150 items. When the cap is hit, `isIncomplete: true` is returned so the client re-queries on every keystroke — the list tightens naturally as you type more characters.
-
-**Context-aware filtering:**
-- Lowercase prefix → only functions, vars, params (no classes)
-- Uppercase prefix → only classes, objects, types (no functions)
-- `@` prefix → only annotation/class kinds (no functions or variables)
-- Cross-package symbols require prefix ≥ 2 characters to prevent noise
+[Full configuration reference →](docs/features.md)
 
 ---
 
 ## Limitations
 
-- **No type inference** for generic lambda parameters — use explicit type annotations for unresolvable cases
-- **No type checking** — syntax errors only (tree-sitter). Use Gradle/Xcode/CI for semantic diagnostics
-- **Swift support is structural** — all symbols indexed, but no module boundaries, no closure type inference, no extension member resolution
-- **Java support is lighter** than Kotlin — definition and hover work; completion less refined
-- **`findReferences` on common names** returns noise — no import-aware filtering yet
-
----
-
-## More
-
-- [Feature details](docs/features.md) — resolution chain, completion, go-to-definition specifics
-- [Editor setup](docs/editors.md) — Helix, Neovim, VS Code
-- [GitHub Copilot CLI](docs/copilot.md) — agent integration, skill extension
-- [Architecture & performance](docs/architecture.md) — source layout, memory model, build from source
-- [Performance & profiling](docs/performance.md) — benchmarks, flamegraph setup, optimization roadmap
+- **No type inference** for generic lambda parameters — use explicit annotations for unresolvable cases
+- **No type checking** — syntax errors only; use Gradle/Xcode/CI for semantic diagnostics
+- **Swift support is structural** — all symbols indexed; no module boundaries or closure type inference
+- **Java completion** is less refined than Kotlin
+- **`findReferences` on common names** returns noise — name-based search via `rg`, no import filtering yet
+- **Binary `.aar`/`.jar`** cannot be indexed — requires a `*-sources.jar` (use `kotlin-lsp extract-sources`)
 
 ---
 
@@ -273,54 +166,18 @@ Results are capped at 150 items. When the cap is hit, `isIncomplete: true` is re
 | **Editor support** | Any LSP editor | VS Code (official) |
 | **Swift** | ✓ | ✗ |
 
-They can coexist — use kotlin-lsp for fast navigation, the official one for diagnostics when it stabilises.
+They can coexist — use kotlin-lsp for fast navigation, the official one for type-checked diagnostics.
 
 ---
 
-## Changelog
+## Learn more
 
-### 0.11.0
-
-- **Semantic tokens** — full `textDocument/semanticTokens/full` implementation with two-phase pipeline: Phase 1 (CST classification via tree-sitter) + Phase 2 (cross-file resolution via index). Supports Kotlin, Java, and Swift.
-- **`tokens` CLI command** — `kotlin-lsp tokens <file>` dumps semantic tokens (CST-only by default, 19ms). `--resolve` opts into Phase 2 cross-file resolution.
-- **`tree` CLI command** — `kotlin-lsp tree <file>` dumps the tree-sitter parse tree for debugging.
-- **VS Code extension** — bundled extension with syntax highlighting, binary auto-discovery, and support for Kotlin, Java, and Swift files.
-- **GitHub Actions release workflow** — cross-platform binary builds (Linux x86_64/aarch64, macOS x86_64/aarch64) + `.vsix` packaging on tag push.
-- **Performance** — CLI `tokens` defaults to CST-only (19ms vs 1.1s with full index). Added `docs/performance.md` with benchmarks and profiling guide.
-
-### 0.10.0
-
-- **CLI mode** — `kotlin-lsp find|refs|hover|index` subcommands: use kotlin-lsp as a standalone tool without an editor or daemon
-- **Auto mode** — uses cached index when available, falls back to fast rg/fd automatically (no flag needed)
-- **`--fast` flag** — pure rg/fd, zero startup cost; useful in scripts and CI
-- **`--smart` flag** — builds index if missing, uses full cross-file accuracy
-- **`--json` flag** — machine-readable output for piping/scripting
-- **`--root` flag** — workspace root override; defaults to nearest `.git` dir or cwd
-- **`--help` / `--version`** — standard CLI flags; work before or after subcommand
-- **Helpful errors** — `--find` (common mistake) prints `'find' is a subcommand, not a flag`
-
-### 0.8.0
-
-- **Auto-import completion** — selecting an unimported class automatically inserts the `import` statement; multiple same-named classes from different packages appear as separate items showing the package
-- **Completion relevance scoring** — results sorted by match quality: exact prefix → camelCase acronym (e.g. `CB` → `ColumnButton`) → substring; capped at 150 with `isIncomplete: true` so the client re-queries as you type
-- **Cross-package gate** — auto-import symbols require prefix ≥ 2 chars; `@` context restricts completions to class/annotation kinds
-- **Warm-start improvements** — skip branch-deleted cached paths; warm starts always bypass the file-count cap
-- **Java import handling** — `parse_imports_from_lines` strips trailing `;` and `static` prefix; auto-import inserts Java-style `import foo.Bar;` for `.java` files
-
-### 0.7.1
-
-- **`ignorePatterns` configuration** — exclude directories/files from indexing via `initializationOptions` (gitignore-style globs, any depth, warm-start aware)
-- **Swift hover keyword fix** — Swift functions now show `func` instead of `fun` in hover code blocks
-
-### 0.7.0
-
-- **`it`/`this` type-directed inference** — when `it` or `this` is a call argument (named or positional), the expected parameter type is inferred from the function signature
-- **`this` in receiver vs regular lambdas** — correctly hints enclosing class in `(T) -> R`, receiver type in `T.() -> R` and scope functions
-- **`fun interface` recognition** — fix tree-sitter not recognising `fun interface` declarations
-- **Suspend lambda type inference** — correct type inference for `suspend` lambda parameters
-- **Copilot extension** — remove overly restrictive `kotlin_rg` pre-hook
-
-[Full changelog →](CHANGELOG.md)
+- [Feature details](docs/features.md) — resolution chain, completion, CLI reference
+- [Editor setup](docs/editors.md) — Helix, Neovim, VS Code, Zed
+- [GitHub Copilot CLI](docs/copilot.md) — agent integration, skill extension
+- [Architecture & performance](docs/architecture.md) — source layout, memory model
+- [Performance & profiling](docs/performance.md) — benchmarks, flamegraph setup
+- [Changelog](CHANGELOG.md)
 
 ---
 
