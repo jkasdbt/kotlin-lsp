@@ -12,6 +12,7 @@ homepage    = "https://github.com/Hessesian/kotlin-lsp"
 readme      = "README.md"
 keywords    = ["lsp", "kotlin", "java", "swift", "language-server"]
 categories  = ["development-tools", "command-line-utilities"]
+exclude      = ["demo/*", "contrib/*", ".tours/*", "docs/*", ".github/*"]
 
 [[bin]]
 name = "kotlin-lsp"
