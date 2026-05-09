@@ -17,10 +17,18 @@ cargo install kotlin-lsp
 
 ## Quick start
 
-**1. Wire up your editor:**
+**VS Code** — download and install the `.vsix` from the [latest release](https://github.com/Hessesian/kotlin-lsp/releases/latest):
+
+```bash
+code --install-extension kotlin-lsp-linux-x64-vX.Y.Z.vsix   # Linux
+code --install-extension kotlin-lsp-darwin-arm64-vX.Y.Z.vsix # macOS Apple Silicon
+```
+
+The extension bundles syntax highlighting and launches `kotlin-lsp` automatically.
+
+**Helix** — add to `~/.config/helix/languages.toml`:
 
 ```toml
-# Helix — ~/.config/helix/languages.toml
 [[language]]
 name = "kotlin"
 language-servers = ["kotlin-lsp"]
@@ -33,17 +41,18 @@ language-servers = ["kotlin-lsp"]
 command = "kotlin-lsp"
 ```
 
-[Neovim, VS Code, Zed setup →](docs/editors.md)
+[Neovim, Zed setup →](docs/editors.md)
 
-**2. Open a Kotlin/Java file.** The server indexes your workspace in the background — hover, go-to-definition, and completions work immediately via `rg` fallback while indexing runs.
+**Once your editor is wired up:**
 
-**3. Index library sources** (optional, for hover and completions on third-party code):
+1. Open a Kotlin/Java file — hover, go-to-definition, and completions work immediately via `rg` fallback while the index builds in the background.
+2. _(Optional)_ Index library sources for hover and completions on third-party code:
 
 ```bash
-kotlin-lsp extract-sources          # extracts *-sources.jar from ~/.gradle
+kotlin-lsp extract-sources   # unpacks *-sources.jar from ~/.gradle; restart editor after
 ```
 
-`~/.kotlin-lsp/sources` is picked up automatically by both CLI and LSP server — no config needed.
+`~/.kotlin-lsp/sources` is picked up automatically — no config needed.
 
 ---
 

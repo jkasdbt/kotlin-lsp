@@ -1,6 +1,50 @@
 # Editor setup
 
-Replace `/path/to/kotlin-lsp` with `~/.cargo/bin/kotlin-lsp` (or wherever `cargo install` placed it — run `which kotlin-lsp` to confirm).
+`kotlin-lsp` is at `~/.cargo/bin/kotlin-lsp` after `cargo install`. Run `which kotlin-lsp` to confirm it's on your `PATH`.
+
+## VS Code
+
+![VS Code with kotlin-lsp](../demo/vscode.png)
+
+Download the `.vsix` for your platform from the [latest release](https://github.com/Hessesian/kotlin-lsp/releases/latest) and install it:
+
+```bash
+# Linux x86_64
+code --install-extension kotlin-lsp-linux-x64-vX.Y.Z.vsix
+
+# macOS Apple Silicon
+code --install-extension kotlin-lsp-darwin-arm64-vX.Y.Z.vsix
+
+# macOS Intel
+code --install-extension kotlin-lsp-darwin-x64-vX.Y.Z.vsix
+```
+
+Or install the universal `.vsix` (no bundled binary — `kotlin-lsp` must be on your `PATH`):
+
+```bash
+code --install-extension kotlin-lsp-vX.Y.Z.vsix
+```
+
+The extension activates automatically for `.kt`, `.java`, and `.swift` files — no other Kotlin plugins needed.
+
+> **Tip:** Disable other Kotlin extensions (`fwcd.kotlin`, `jetbrains.kotlin`) to avoid conflicts.
+
+**Configuration** (optional) — in `.vscode/settings.json`:
+
+```json
+{
+  "kotlinLsp.path": "/path/to/kotlin-lsp"
+}
+```
+
+Default: `kotlin-lsp` on `$PATH`.
+
+**Install from source** (if you prefer to build locally):
+
+```bash
+cd contrib/vscode && npm install
+ln -s "$(pwd)/contrib/vscode" ~/.vscode/extensions/kotlin-lsp.kotlin-lsp-client-0.0.1
+```
 
 ## Helix
 
@@ -23,11 +67,10 @@ language-servers = ["kotlin-lsp"]
 auto-format = false
 
 [language-server.kotlin-lsp]
-command = "/path/to/kotlin-lsp"
+command = "kotlin-lsp"
 ```
 
-Then restart Helix (or run `:lsp-restart`).  
-Check the server is running: `:lsp-workspace-command` or watch `:log-open`.
+Restart Helix (or run `:lsp-restart`). Check the server is running: `:lsp-workspace-command` or watch `:log-open`.
 
 ## Neovim (nvim-lspconfig)
 
@@ -38,7 +81,7 @@ local configs   = require('lspconfig.configs')
 if not configs.kotlin_lsp then
   configs.kotlin_lsp = {
     default_config = {
-      cmd       = { '/path/to/kotlin-lsp' },
+      cmd       = { 'kotlin-lsp' },
       filetypes = { 'kotlin', 'java', 'swift' },
       root_dir  = lspconfig.util.root_pattern(
         'build.gradle', 'build.gradle.kts', 'pom.xml', 'settings.gradle', 'Package.swift', '.git'
@@ -64,42 +107,6 @@ require('cmp').setup {
 }
 ```
 
-## VS Code
-
-![VS Code with kotlin-lsp](../demo/vscode.png)
-
-A self-contained extension is included in `contrib/vscode/`. It registers the Kotlin language, provides syntax highlighting, and launches kotlin-lsp as the language server — no other Kotlin plugins needed.
-
-**Install:**
-
-```bash
-cd contrib/vscode && npm install
-```
-
-Then symlink into your VS Code extensions directory (run from the repo root):
-
-```bash
-# VS Code
-ln -s "$(pwd)/contrib/vscode" ~/.vscode/extensions/kotlin-lsp.kotlin-lsp-client-0.0.1
-
-# VS Code OSS / Code
-ln -s "$(pwd)/contrib/vscode" ~/.vscode-oss/extensions/kotlin-lsp.kotlin-lsp-client-0.0.1
-```
-
-Restart VS Code. The extension activates automatically for `.kt`, `.java`, and `.swift` files.
-
-> **Tip:** Disable other Kotlin extensions (`fwcd.kotlin`, `jetbrains.kotlin`) to avoid conflicts — kotlin-lsp handles language registration, syntax highlighting, and LSP on its own.
-
-**Configuration** (optional) — in `.vscode/settings.json`:
-
-```json
-{
-  "kotlinLsp.path": "/path/to/kotlin-lsp"
-}
-```
-
-Default: `kotlin-lsp` (looks on `$PATH`).
-
 ## Zed
 
 Add to your Zed settings (`~/.config/zed/settings.json` or `.zed/settings.json` per-project):
@@ -120,7 +127,7 @@ Add to your Zed settings (`~/.config/zed/settings.json` or `.zed/settings.json` 
   "lsp": {
     "kotlin-lsp": {
       "binary": {
-        "path": "/path/to/kotlin-lsp",
+        "path": "kotlin-lsp",
         "arguments": ["--stdio"]
       }
     }
