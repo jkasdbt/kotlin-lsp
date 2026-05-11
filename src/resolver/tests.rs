@@ -1747,7 +1747,9 @@ fn is_annotation_context_detection() {
     assert!(is_annotation_context("@Composable", "Composable"));
     assert!(is_annotation_context("  @Comp", "Comp"));
     assert!(!is_annotation_context("Composable", "Composable")); // no @
-                                                                 // "x@Comp" — technically matches, real code won't have identifiers directly before @
+    // "@" alone — cursor right after the trigger character, empty prefix
+    assert!(is_annotation_context("@", ""));
+    assert!(is_annotation_context("  @", ""));
 }
 
 // ── ReceiverType::from_raw ────────────────────────────────────────────────

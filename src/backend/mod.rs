@@ -559,7 +559,7 @@ fn server_capabilities() -> ServerCapabilities {
             },
         )),
         completion_provider: Some(CompletionOptions {
-            trigger_characters: Some(vec![".".into(), ":".into()]),
+            trigger_characters: Some(vec![".".into(), ":".into(), "@".into()]),
             resolve_provider: Some(true),
             ..Default::default()
         }),
