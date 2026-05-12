@@ -140,72 +140,132 @@ pub(crate) fn build_bare_names(definitions: &DashMap<String, Vec<Location>>) -> 
     names
 }
 
-/// Accumulate one library cache entry directly into batch maps — one `FileData` clone,
-/// no intermediate `FileIndexResult`. Used by the library cache fast path.
-fn collect_into_library_batch(
-    uri: &Url,
-    uri_str: &str,
-    entry: &FileCacheEntry,
-    class_kinds: &[SymbolKind],
-    local_files: &mut HashMap<String, Arc<FileData>>,
-    local_hashes: &mut HashMap<String, u64>,
-    local_definitions: &mut HashMap<String, Vec<Location>>,
-    local_qualified: &mut HashMap<String, Location>,
-    local_packages: &mut HashMap<String, Vec<String>>,
-    local_subtypes: &mut HashMap<String, Vec<Location>>,
-) {
-    let data = &entry.file_data;
+/// Accumulator for the library index fast path.
+///
+/// Bundles all six HashMap contributions and the library-URI list so that
+/// adding a new index field causes a compile error at `flush_into` rather
+/// than a silent miss at an arbitrary call site.
+struct LibraryBatch {
+    files: HashMap<String, Arc<FileData>>,
+    hashes: HashMap<String, u64>,
+    definitions: HashMap<String, Vec<Location>>,
+    qualified: HashMap<String, Location>,
+    packages: HashMap<String, Vec<String>>,
+    subtypes: HashMap<String, Vec<Location>>,
+    library_uris: Vec<String>,
+}
 
-    let file_stem: Option<String> = uri
-        .to_file_path()
-        .ok()
-        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
+impl LibraryBatch {
+    fn with_capacity(n: usize) -> Self {
+        Self {
+            files: HashMap::with_capacity(n),
+            hashes: HashMap::with_capacity(n),
+            definitions: HashMap::new(),
+            qualified: HashMap::new(),
+            packages: HashMap::new(),
+            subtypes: HashMap::new(),
+            library_uris: Vec::with_capacity(n),
+        }
+    }
 
-    for sym in &data.symbols {
-        let loc = Location {
-            uri: uri.clone(),
-            range: sym.selection_range,
-        };
-        local_definitions
-            .entry(sym.name.clone())
-            .or_default()
-            .push(loc.clone());
-        if let Some(ref pkg) = data.package {
-            local_qualified.insert(format!("{pkg}.{}", sym.name), loc.clone());
-            if let Some(ref stem) = file_stem {
-                if *stem != sym.name {
-                    local_qualified.insert(format!("{pkg}.{stem}.{}", sym.name), loc);
+    /// Populate one cache entry into the batch.
+    ///
+    /// `path` is the filesystem path used to determine whether the file is
+    /// outside `workspace_root` (library) or inside it (workspace source).
+    fn collect_entry(
+        &mut self,
+        uri: &Url,
+        uri_str: &str,
+        path: &std::path::Path,
+        entry: &FileCacheEntry,
+        class_kinds: &[SymbolKind],
+        workspace_root: &std::path::Path,
+    ) {
+        let data = &entry.file_data;
+
+        let file_stem: Option<String> = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
+
+        for sym in &data.symbols {
+            let loc = Location {
+                uri: uri.clone(),
+                range: sym.selection_range,
+            };
+            self.definitions
+                .entry(sym.name.clone())
+                .or_default()
+                .push(loc.clone());
+            if let Some(ref pkg) = data.package {
+                self.qualified.insert(format!("{pkg}.{}", sym.name), loc.clone());
+                if let Some(ref stem) = file_stem {
+                    if *stem != sym.name {
+                        self.qualified.insert(format!("{pkg}.{stem}.{}", sym.name), loc);
+                    }
                 }
             }
         }
-    }
 
-    if let Some(ref pkg) = data.package {
-        local_packages
-            .entry(pkg.clone())
-            .or_default()
-            .push(uri_str.to_string());
-    }
-
-    for sym in &data.symbols {
-        if !class_kinds.contains(&sym.kind) {
-            continue;
-        }
-        let start_line = sym.selection_start();
-        let class_loc = Location {
-            uri: uri.clone(),
-            range: sym.selection_range,
-        };
-        for (_, super_name, _) in data.supers.iter().filter(|(l, _, _)| *l == start_line) {
-            local_subtypes
-                .entry(super_name.clone())
+        if let Some(ref pkg) = data.package {
+            self.packages
+                .entry(pkg.clone())
                 .or_default()
-                .push(class_loc.clone());
+                .push(uri_str.to_string());
+        }
+
+        for sym in &data.symbols {
+            if !class_kinds.contains(&sym.kind) {
+                continue;
+            }
+            let start_line = sym.selection_start();
+            let class_loc = Location {
+                uri: uri.clone(),
+                range: sym.selection_range,
+            };
+            for (_, super_name, _) in data.supers.iter().filter(|(l, _, _)| *l == start_line) {
+                self.subtypes
+                    .entry(super_name.clone())
+                    .or_default()
+                    .push(class_loc.clone());
+            }
+        }
+
+        self.files.insert(uri_str.to_string(), Arc::new(data.clone()));
+        self.hashes.insert(uri_str.to_string(), entry.content_hash);
+
+        if !path.starts_with(workspace_root) {
+            self.library_uris.push(uri_str.to_string());
         }
     }
 
-    local_files.insert(uri_str.to_string(), Arc::new(data.clone()));
-    local_hashes.insert(uri_str.to_string(), entry.content_hash);
+    /// Bulk-extend the Indexer's DashMaps — one lock acquisition per unique key.
+    ///
+    /// All fields are consumed here. Adding a new index map to `LibraryBatch`
+    /// will cause a compile error if `flush_into` is not updated.
+    fn flush_into(self, indexer: &Indexer) {
+        for (k, v) in self.hashes {
+            indexer.content_hashes.insert(k, v);
+        }
+        for (k, v) in self.files {
+            indexer.files.insert(k, v);
+        }
+        for (name, locs) in self.definitions {
+            indexer.definitions.entry(name).or_default().extend(locs);
+        }
+        for (key, loc) in self.qualified {
+            indexer.qualified.insert(key, loc);
+        }
+        for (pkg, uris) in self.packages {
+            indexer.packages.entry(pkg).or_default().extend(uris);
+        }
+        for (super_name, locs) in self.subtypes {
+            indexer.subtypes.entry(super_name).or_default().extend(locs);
+        }
+        for uri_str in self.library_uris {
+            indexer.library_uris.insert(uri_str);
+        }
+    }
 }
 
 // ─── impl Indexer ─────────────────────────────────────────────────────────────
@@ -367,14 +427,7 @@ impl Indexer {
             );
 
 
-            let mut local_files: HashMap<String, Arc<FileData>> =
-                HashMap::with_capacity(total);
-            let mut local_hashes: HashMap<String, u64> = HashMap::with_capacity(total);
-            let mut local_definitions: HashMap<String, Vec<Location>> = HashMap::new();
-            let mut local_qualified: HashMap<String, Location> = HashMap::new();
-            let mut local_packages: HashMap<String, Vec<String>> = HashMap::new();
-            let mut local_subtypes: HashMap<String, Vec<Location>> = HashMap::new();
-            let mut new_library_uris: Vec<String> = Vec::with_capacity(total);
+            let mut batch = LibraryBatch::with_capacity(total);
 
             // Class kinds constant — hoisted out of the per-file loop.
             let class_kinds = [
@@ -390,45 +443,17 @@ impl Indexer {
                     continue;
                 };
                 let uri_str = uri.to_string();
-                collect_into_library_batch(
+                batch.collect_entry(
                     &uri,
                     &uri_str,
+                    std::path::Path::new(path_str.as_str()),
                     entry,
                     &class_kinds,
-                    &mut local_files,
-                    &mut local_hashes,
-                    &mut local_definitions,
-                    &mut local_qualified,
-                    &mut local_packages,
-                    &mut local_subtypes,
+                    &workspace_root,
                 );
-                if !std::path::Path::new(path_str.as_str()).starts_with(&workspace_root) {
-                    new_library_uris.push(uri_str);
-                }
             }
 
-            // Bulk-extend DashMaps — one lock acquisition per unique key.
-            for (k, v) in local_hashes {
-                self.content_hashes.insert(k, v);
-            }
-            for (k, v) in local_files {
-                self.files.insert(k, v);
-            }
-            for (name, locs) in local_definitions {
-                self.definitions.entry(name).or_default().extend(locs);
-            }
-            for (key, loc) in local_qualified {
-                self.qualified.insert(key, loc);
-            }
-            for (pkg, uris) in local_packages {
-                self.packages.entry(pkg).or_default().extend(uris);
-            }
-            for (super_name, locs) in local_subtypes {
-                self.subtypes.entry(super_name).or_default().extend(locs);
-            }
-            for uri_str in new_library_uris {
-                self.library_uris.insert(uri_str);
-            }
+            batch.flush_into(&self);
 
             self.rebuild_bare_name_cache();
 
