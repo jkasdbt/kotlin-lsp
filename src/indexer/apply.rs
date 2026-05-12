@@ -28,7 +28,7 @@ use crate::indexer::cache::FileCacheEntry;
 use crate::indexer::discover::find_source_files_unconstrained;
 use crate::parser::parse_by_extension;
 use crate::resolver::symbols_from_uri_as_completions_pub;
-use crate::types::{FileData, FileIndexResult, WorkspaceIndexResult};
+use crate::types::{FileData, FileIndexResult, Visibility, WorkspaceIndexResult};
 use crate::StrExt;
 
 // ─── hash helper ─────────────────────────────────────────────────────────────
@@ -44,6 +44,22 @@ pub(super) fn hash_str(s: &str) -> u64 {
 }
 
 // ─── Pure functions ───────────────────────────────────────────────────────────
+
+/// Strip private symbols from `results` whose URI appears in `library_uris`.
+/// Private members of external dependencies are inaccessible from workspace code.
+fn strip_library_private_symbols(
+    results: &mut [FileIndexResult],
+    library_uris: &std::collections::HashSet<&str>,
+) {
+    for result in results.iter_mut() {
+        if library_uris.contains(result.uri.as_str()) {
+            result
+                .data
+                .symbols
+                .retain(|s| s.visibility != Visibility::Private);
+        }
+    }
+}
 
 /// Pure: compute what a parsed file contributes to each index map.
 /// No side effects. Call [`Indexer::apply_contributions`] to commit.
@@ -181,14 +197,25 @@ impl LibraryBatch {
         class_kinds: &[SymbolKind],
         workspace_root: &std::path::Path,
     ) {
-        let data = &entry.file_data;
+        let is_library = !path.starts_with(workspace_root);
+
+        // Library files: strip private symbols — private members of external
+        // dependencies are never accessible from workspace code and only add
+        // noise to completions and workspace symbol search.
+        let file_data: Arc<FileData> = if is_library {
+            let mut d = entry.file_data.clone();
+            d.symbols.retain(|s| s.visibility != Visibility::Private);
+            Arc::new(d)
+        } else {
+            Arc::new(entry.file_data.clone())
+        };
 
         let file_stem: Option<String> = uri
             .to_file_path()
             .ok()
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
 
-        for sym in &data.symbols {
+        for sym in &file_data.symbols {
             let loc = Location {
                 uri: uri.clone(),
                 range: sym.selection_range,
@@ -197,7 +224,7 @@ impl LibraryBatch {
                 .entry(sym.name.clone())
                 .or_default()
                 .push(loc.clone());
-            if let Some(ref pkg) = data.package {
+            if let Some(ref pkg) = file_data.package {
                 self.qualified
                     .insert(format!("{pkg}.{}", sym.name), loc.clone());
                 if let Some(ref stem) = file_stem {
@@ -209,14 +236,14 @@ impl LibraryBatch {
             }
         }
 
-        if let Some(ref pkg) = data.package {
+        if let Some(ref pkg) = file_data.package {
             self.packages
                 .entry(pkg.clone())
                 .or_default()
                 .push(uri_str.to_string());
         }
 
-        for sym in &data.symbols {
+        for sym in &file_data.symbols {
             if !class_kinds.contains(&sym.kind) {
                 continue;
             }
@@ -225,7 +252,7 @@ impl LibraryBatch {
                 uri: uri.clone(),
                 range: sym.selection_range,
             };
-            for (_, super_name, _) in data.supers.iter().filter(|(l, _, _)| *l == start_line) {
+            for (_, super_name, _) in file_data.supers.iter().filter(|(l, _, _)| *l == start_line) {
                 self.subtypes
                     .entry(super_name.clone())
                     .or_default()
@@ -233,11 +260,10 @@ impl LibraryBatch {
             }
         }
 
-        self.files
-            .insert(uri_str.to_string(), Arc::new(data.clone()));
+        self.files.insert(uri_str.to_string(), file_data);
         self.hashes.insert(uri_str.to_string(), entry.content_hash);
 
-        if !path.starts_with(workspace_root) {
+        if is_library {
             self.library_uris.push(uri_str.to_string());
         }
     }
@@ -550,6 +576,11 @@ impl Indexer {
         }
 
         let newly_parsed = all_results.len().saturating_sub(cache_hits);
+
+        // Strip private symbols from library files before applying.
+        let library_uri_set: std::collections::HashSet<&str> =
+            new_library_uris.iter().map(String::as_str).collect();
+        strip_library_private_symbols(&mut all_results, &library_uri_set);
 
         // Apply results additively (no reset_index_state).
         for result in all_results {
